@@ -1,0 +1,44 @@
+{
+  "name": "cosmoid-bridge",
+  "version": "1.0.0",
+  "description": "Bridge application for connecting web applications to Cosmoid BLE devices",
+  "main": "src/main/index.js",
+  "author": "Your Name",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --debug",
+    "build": "node scripts/build.js",
+    "package": "node scripts/package.js",
+    "package:mac": "electron-builder --mac",
+    "package:win": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.filisia.cosmoidbridge",
+    "productName": "Cosmoid Bridge",
+    "mac": {
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    }
+  },
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-15",
+    "auto-launch": "^5.0.6",
+    "electron-store": "^8.1.0",
+    "ws": "^8.13.0"
+  },
+  "devDependencies": {
+    "electron": "^25.0.0",
+    "electron-builder": "^24.13.3"
+  }
+}
