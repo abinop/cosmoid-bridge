@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.send('hide-window');
   });
 
-  // Function to update the UI with the list of devices
+  // Handle device updates
   function updateDevicesList(devices) {
     console.log('Updating devices list:', devices);
     devicesList.innerHTML = devices.map(device => `
@@ -70,8 +70,22 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
 
       case 'event':
-        // Handle generic events from the device
+        // Handle generic events
         handleDeviceEvent(message.event);
+        break;
+
+      case 'deviceFound':
+      case 'deviceConnected':
+        // Request updated device list
+        ws.send(JSON.stringify({ type: 'getDevices' }));
+        break;
+      
+      case 'devicesList':
+        updateDevicesList(message.devices);
+        break;
+        
+      case 'characteristicChanged':
+        console.log('Characteristic changed:', message);
         break;
 
       case 'eventResult':
@@ -82,7 +96,30 @@ document.addEventListener('DOMContentLoaded', () => {
         );
         break;
 
-      // Handle other message types...
+      case 'setColor':
+        if (message.deviceId && Array.isArray(message.data)) {
+          const [r, g, b] = message.data;
+          ws.send(JSON.stringify({
+            type: 'sendEvent',
+            deviceId: message.deviceId,
+            eventType: 'setColor',
+            data: [r, g, b]
+          }));
+        }
+        break;
+
+      case 'setLuminosity':
+        if (message.deviceId && Array.isArray(message.data)) {
+          const [intensity] = message.data;
+          console.log(`External call: Setting luminosity to ${intensity}% for device ${message.deviceId}`);
+          ws.send(JSON.stringify({
+            type: 'sendEvent',
+            deviceId: message.deviceId,
+            eventType: 'setLuminosity',
+            data: [intensity, 1] // [intensity, delay]
+          }));
+        }
+        break;
     }
   };
 
@@ -122,9 +159,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   }
 
-  // Function to set random brightness (0-100%)
+  // Add command functions
   window.setRandomLuminosity = (deviceId) => {
-    const luminosity = Math.floor(Math.random() * 100); // Generate random brightness
+    const luminosity = Math.floor(Math.random() * 100); // 0-100%
     console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
     
     ws.send(JSON.stringify({
@@ -135,11 +172,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   };
 
-  // Function to set random color (values 0-4 for each RGB component)
   window.setRandomColor = (deviceId) => {
-    const r = Math.floor(Math.random() * 5); // 0-4 for red
-    const g = Math.floor(Math.random() * 5); // 0-4 for green
-    const b = Math.floor(Math.random() * 5); // 0-4 for blue
+    // Use values between 0-4 to match the example code
+    const r = Math.floor(Math.random() * 5); // 0-4
+    const g = Math.floor(Math.random() * 5); // 0-4
+    const b = Math.floor(Math.random() * 5); // 0-4
     console.log(`Setting color to RGB(${r},${g},${b}) for device ${deviceId}`);
     
     ws.send(JSON.stringify({

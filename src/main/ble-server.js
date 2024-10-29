@@ -151,7 +151,7 @@ class BLEServer extends EventEmitter {
 
         // First discover services
         const services = await device.peripheral.discoverServicesAsync([SERVICE_UUID]);
-        console.log('Discovered services:', services);
+        // console.log('Discovered services:', services);
 
         if (!services || services.length === 0) {
           throw new Error('No matching services found');
@@ -165,11 +165,11 @@ class BLEServer extends EventEmitter {
           CHARACTERISTICS.COMMAND
         ];
         
-        console.log('Looking for characteristics:', characteristicUUIDs);
+        // console.log('Looking for characteristics:', characteristicUUIDs);
         
         // Discover characteristics
         const characteristics = await service.discoverCharacteristicsAsync(characteristicUUIDs);
-        console.log('Found characteristics:', characteristics);
+        // console.log('Found characteristics:', characteristics);
         
         if (!characteristics || characteristics.length === 0) {
           throw new Error('No characteristics found');

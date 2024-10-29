@@ -120,6 +120,36 @@ class WSServer {
           originalEvent: message
         }));
         break;
+
+      case 'setColor':
+        if (message.deviceId && Array.isArray(message.data)) {
+          const eventSuccess = await this.bleServer.sendEventToDevice(
+            message.deviceId,
+            'setColor',
+            message.data
+          );
+          ws.send(JSON.stringify({
+            type: 'eventResult',
+            success: eventSuccess,
+            originalEvent: message
+          }));
+        }
+        break;
+
+      case 'setLuminosity':
+        if (message.deviceId && Array.isArray(message.data)) {
+          const eventSuccess = await this.bleServer.sendEventToDevice(
+            message.deviceId,
+            'setLuminosity',
+            message.data
+          );
+          ws.send(JSON.stringify({
+            type: 'eventResult',
+            success: eventSuccess,
+            originalEvent: message
+          }));
+        }
+        break;
     }
   }
 
