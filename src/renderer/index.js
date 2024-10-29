@@ -16,7 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.send('hide-window');
   });
 
-  // Handle device updates
+  // Function to update the UI with the list of devices
   function updateDevicesList(devices) {
     console.log('Updating devices list:', devices);
     devicesList.innerHTML = devices.map(device => `
@@ -70,22 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
 
       case 'event':
-        // Handle generic events
+        // Handle generic events from the device
         handleDeviceEvent(message.event);
-        break;
-
-      case 'deviceFound':
-      case 'deviceConnected':
-        // Request updated device list
-        ws.send(JSON.stringify({ type: 'getDevices' }));
-        break;
-      
-      case 'devicesList':
-        updateDevicesList(message.devices);
-        break;
-        
-      case 'characteristicChanged':
-        console.log('Characteristic changed:', message);
         break;
 
       case 'eventResult':
@@ -95,6 +81,8 @@ document.addEventListener('DOMContentLoaded', () => {
           'Failed to send command'
         );
         break;
+
+      // Handle other message types...
     }
   };
 
@@ -134,9 +122,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   }
 
-  // Add command functions
+  // Function to set random brightness (0-100%)
   window.setRandomLuminosity = (deviceId) => {
-    const luminosity = Math.floor(Math.random() * 100); // 0-100%
+    const luminosity = Math.floor(Math.random() * 100); // Generate random brightness
     console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
     
     ws.send(JSON.stringify({
@@ -147,11 +135,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   };
 
+  // Function to set random color (values 0-4 for each RGB component)
   window.setRandomColor = (deviceId) => {
-    // Use values between 0-4 to match the example code
-    const r = Math.floor(Math.random() * 5); // 0-4
-    const g = Math.floor(Math.random() * 5); // 0-4
-    const b = Math.floor(Math.random() * 5); // 0-4
+    const r = Math.floor(Math.random() * 5); // 0-4 for red
+    const g = Math.floor(Math.random() * 5); // 0-4 for green
+    const b = Math.floor(Math.random() * 5); // 0-4 for blue
     console.log(`Setting color to RGB(${r},${g},${b}) for device ${deviceId}`);
     
     ws.send(JSON.stringify({
