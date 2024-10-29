@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateDevicesList(devices) {
     console.log('Updating devices list:', devices);
     devicesList.innerHTML = devices.map(device => `
-      <div class="device-item">
+      <div class="device-item" data-device-id="${device.id}">
         <h3>${device.name}</h3>
         <p>ID: ${device.id}</p>
         <p>Status: ${device.connected ? '🟢 Connected' : '⚪️ Discovered'}</p>
@@ -28,7 +28,16 @@ document.addEventListener('DOMContentLoaded', () => {
           <button class="button" onclick="connectDevice('${device.id}')">
             Connect
           </button>
-        ` : ''}
+        ` : `
+          <div class="device-controls">
+            <button class="button" onclick="setRandomLuminosity('${device.id}')">
+              Random Brightness
+            </button>
+            <button class="button" onclick="setRandomColor('${device.id}')">
+              Random Color
+            </button>
+          </div>
+        `}
       </div>
     `).join('');
   }
@@ -49,10 +58,24 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('Received message:', message);
     
     switch(message.type) {
+      case 'deviceDisconnected':
+        console.log('Device disconnected:', message.device);
+        // Remove the device from the UI
+        const deviceElement = document.querySelector(`[data-device-id="${message.device.id}"]`);
+        if (deviceElement) {
+          deviceElement.remove();
+        }
+        // Update the list after removal
+        ws.send(JSON.stringify({ type: 'getDevices' }));
+        break;
+
+      case 'event':
+        // Handle generic events
+        handleDeviceEvent(message.event);
+        break;
+
       case 'deviceFound':
       case 'deviceConnected':
-      case 'deviceDisconnected':
-      case 'deviceUpdated':
         // Request updated device list
         ws.send(JSON.stringify({ type: 'getDevices' }));
         break;
@@ -63,6 +86,14 @@ document.addEventListener('DOMContentLoaded', () => {
         
       case 'characteristicChanged':
         console.log('Characteristic changed:', message);
+        break;
+
+      case 'eventResult':
+        console.log(
+          message.success ? 
+          'Command sent successfully' : 
+          'Failed to send command'
+        );
         break;
     }
   };
@@ -79,6 +110,55 @@ document.addEventListener('DOMContentLoaded', () => {
     ws.send(JSON.stringify({
       type: 'connect',
       deviceId
+    }));
+  };
+
+  function handleDeviceEvent(event) {
+    console.log('Received device event:', event);
+    // Handle different event types
+    switch(event.type) {
+      case 'characteristicChanged':
+        // Handle characteristic changes
+        break;
+      // Add other event type handlers
+    }
+  }
+
+  // Function to send events to device
+  function sendEventToDevice(deviceId, eventType, data) {
+    ws.send(JSON.stringify({
+      type: 'sendEvent',
+      deviceId,
+      eventType,
+      data
+    }));
+  }
+
+  // Add command functions
+  window.setRandomLuminosity = (deviceId) => {
+    const luminosity = Math.floor(Math.random() * 100); // 0-100%
+    console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
+    
+    ws.send(JSON.stringify({
+      type: 'sendEvent',
+      deviceId,
+      eventType: 'setLuminosity',
+      data: [luminosity, 1] // [intensity, delay]
+    }));
+  };
+
+  window.setRandomColor = (deviceId) => {
+    // Use values between 0-4 to match the example code
+    const r = Math.floor(Math.random() * 5); // 0-4
+    const g = Math.floor(Math.random() * 5); // 0-4
+    const b = Math.floor(Math.random() * 5); // 0-4
+    console.log(`Setting color to RGB(${r},${g},${b}) for device ${deviceId}`);
+    
+    ws.send(JSON.stringify({
+      type: 'sendEvent',
+      deviceId,
+      eventType: 'setColor',
+      data: [r, g, b] // The mode (1) is added in the server
     }));
   };
 });

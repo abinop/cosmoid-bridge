@@ -12,6 +12,15 @@ class WSServer {
   }
 
   setupBLEListeners() {
+    // Generic event handler
+    this.bleServer.on('event', (event) => {
+      this.broadcast({
+        type: 'event',
+        event
+      });
+    });
+
+    // Specific event handlers
     this.bleServer.on('deviceDiscovered', (device) => {
       this.broadcast({
         type: 'deviceFound',
@@ -27,6 +36,7 @@ class WSServer {
     });
 
     this.bleServer.on('deviceDisconnected', (device) => {
+      console.log('Broadcasting device disconnected:', device);
       this.broadcast({
         type: 'deviceDisconnected',
         device
@@ -95,6 +105,19 @@ class WSServer {
           type: 'writeResult',
           deviceId: message.deviceId,
           success: writeSuccess
+        }));
+        break;
+      
+      case 'sendEvent':
+        const eventSuccess = await this.bleServer.sendEventToDevice(
+          message.deviceId,
+          message.eventType,
+          message.data
+        );
+        ws.send(JSON.stringify({
+          type: 'eventResult',
+          success: eventSuccess,
+          originalEvent: message
         }));
         break;
     }

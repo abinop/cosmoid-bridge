@@ -1,20 +1,20 @@
 // BLE server implementation for device management
 const noble = require('@abandonware/noble');
 const EventEmitter = require('events');
-const { BLE_SERVICE_UUID, BLE_CHARACTERISTICS } = require('../common/constants');
 
-// Define the service UUIDs we're interested in (without hyphens)
-const MAIN_SERVICE_UUID = '000015231212efde1523785feabcd123';
+// Define the service UUIDs without hyphens to match the device format
+const SERVICE_UUID = '000015231212efde1523785feabcd123';
+const CHARACTERISTICS = {
+  SENSOR: '000015241212efde1523785feabcd123',
+  BUTTON_STATUS: '000015251212efde1523785feabcd123',
+  COMMAND: '000015281212efde1523785feabcd123'
+};
 
-// Helper function to format UUID for CoreBluetooth
-function formatUUID(uuid) {
-  // Remove any existing hyphens and lowercase
-  uuid = uuid.replace(/-/g, '').toLowerCase();
-  
-  // Insert hyphens in the correct positions for 128-bit UUID
-  return uuid.replace(/^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/,
-    '$1-$2-$3-$4-$5');
-}
+// Command definitions
+const COMMANDS = {
+  SET_LUMINOSITY: 1,  // [1, intensity, delay]
+  SET_COLOR: 2        // [2, r, g, b, 1]
+};
 
 class BLEServer extends EventEmitter {
   constructor() {
@@ -31,6 +31,9 @@ class BLEServer extends EventEmitter {
         this.startScanning();
       } else {
         console.log('Bluetooth state is not powered on:', state);
+        // If Bluetooth is turned off, clear all devices
+        this.discoveredDevices.clear();
+        this.connectedDevices.clear();
       }
     });
 
@@ -47,6 +50,12 @@ class BLEServer extends EventEmitter {
     noble.on('scanStop', () => {
       console.log('Scanning stopped...');
     });
+
+    // Add state change handler for device disconnection
+    noble.on('disconnect', (peripheral) => {
+      console.log('Device disconnected:', peripheral.id);
+      this.handleDeviceDisconnect(peripheral.id);
+    });
   }
 
   startScanning() {
@@ -54,7 +63,7 @@ class BLEServer extends EventEmitter {
     // First stop any existing scan
     noble.stopScanning(() => {
       // Start scanning only for Cosmo service UUID
-      noble.startScanning([MAIN_SERVICE_UUID], true, (error) => {
+      noble.startScanning([SERVICE_UUID], true, (error) => {
         if (error) {
           console.error('Failed to start scanning:', error);
         }
@@ -85,9 +94,8 @@ class BLEServer extends EventEmitter {
       });
 
       peripheral.on('disconnect', () => {
-        deviceInfo.connected = false;
-        this.connectedDevices.delete(peripheral.id);
-        this.emit('deviceDisconnected', deviceInfo);
+        console.log('Device disconnected:', deviceInfo.name);
+        this.handleDeviceDisconnect(peripheral.id);
       });
 
       // Emit device discovered event
@@ -97,6 +105,28 @@ class BLEServer extends EventEmitter {
       const device = this.discoveredDevices.get(peripheral.id);
       device.info.rssi = peripheral.rssi;
       this.emit('deviceUpdated', device.info);
+    }
+  }
+
+  handleDeviceDisconnect(deviceId) {
+    const device = this.discoveredDevices.get(deviceId);
+    if (device) {
+      console.log('Processing disconnect for device:', device.info.name);
+      device.info.connected = false;
+      this.connectedDevices.delete(deviceId);
+      this.discoveredDevices.delete(deviceId);
+      
+      // Clean up any existing listeners
+      try {
+        device.characteristics?.forEach(char => char.removeAllListeners());
+      } catch (error) {
+        console.warn('Error cleaning up characteristic listeners:', error);
+      }
+
+      this.emit('deviceDisconnected', device.info);
+      
+      // Restart scanning to rediscover the device if it comes back
+      this.startScanning();
     }
   }
 
@@ -117,11 +147,10 @@ class BLEServer extends EventEmitter {
         console.log('Discovering services and characteristics...');
         
         // Format the service UUID correctly
-        const formattedServiceUUID = formatUUID(MAIN_SERVICE_UUID);
-        console.log('Using service UUID:', formattedServiceUUID);
+        console.log('Using service UUID:', SERVICE_UUID);
 
         // First discover services
-        const services = await device.peripheral.discoverServicesAsync([formattedServiceUUID]);
+        const services = await device.peripheral.discoverServicesAsync([SERVICE_UUID]);
         console.log('Discovered services:', services);
 
         if (!services || services.length === 0) {
@@ -130,20 +159,27 @@ class BLEServer extends EventEmitter {
 
         // Then discover characteristics for the first matching service
         const service = services[0];
-        const formattedCharacteristicUUIDs = Object.values(BLE_CHARACTERISTICS)
-          .map(uuid => formatUUID(uuid));
+        const characteristicUUIDs = [
+          CHARACTERISTICS.SENSOR,
+          CHARACTERISTICS.BUTTON_STATUS,
+          CHARACTERISTICS.COMMAND
+        ];
         
-        console.log('Looking for characteristics:', formattedCharacteristicUUIDs);
+        console.log('Looking for characteristics:', characteristicUUIDs);
         
         // Discover characteristics
-        const characteristics = await service.discoverCharacteristicsAsync(formattedCharacteristicUUIDs);
+        const characteristics = await service.discoverCharacteristicsAsync(characteristicUUIDs);
         console.log('Found characteristics:', characteristics);
         
         if (!characteristics || characteristics.length === 0) {
           throw new Error('No characteristics found');
         }
 
+        // Store characteristics in both device objects
         device.characteristics = characteristics;
+        if (this.connectedDevices.has(deviceId)) {
+          this.connectedDevices.get(deviceId).characteristics = characteristics;
+        }
         
         // Setup notifications for each characteristic
         for (const char of characteristics) {
@@ -151,7 +187,7 @@ class BLEServer extends EventEmitter {
             console.log('Setting up notifications for characteristic:', char.uuid);
             await char.subscribeAsync();
             char.on('data', (data) => {
-              console.log('Received data from characteristic:', char.uuid, data);
+              // console.log('Received data from characteristic:', char.uuid, data);
               this.emit('characteristicChanged', {
                 deviceId,
                 characteristicUUID: char.uuid,
@@ -162,15 +198,16 @@ class BLEServer extends EventEmitter {
             console.warn('Failed to setup notifications for characteristic:', char.uuid, notifyError);
           }
         }
+
+        // Update connection status
+        device.info.connected = true;
+        this.connectedDevices.set(deviceId, device);
+        this.emit('deviceConnected', device.info);
         
         return true;
       } catch (error) {
         console.error('Failed to connect:', error);
-        try {
-          await device.peripheral.disconnectAsync();
-        } catch (disconnectError) {
-          console.error('Failed to disconnect after failed connection:', disconnectError);
-        }
+        this.handleDeviceDisconnect(deviceId);
         return false;
       }
     } else {
@@ -183,7 +220,7 @@ class BLEServer extends EventEmitter {
     const device = this.connectedDevices.get(deviceId);
     if (device && device.characteristics) {
       const characteristic = device.characteristics
-        .find(c => c.uuid === formatUUID(characteristicUUID));
+        .find(c => c.uuid === SERVICE_UUID);
       
       if (characteristic) {
         await characteristic.writeAsync(Buffer.from(value), false);
@@ -192,6 +229,91 @@ class BLEServer extends EventEmitter {
     }
     return false;
   }
+
+  // Add method to send events to device
+  async sendEventToDevice(deviceId, eventType, data) {
+    const device = this.connectedDevices.get(deviceId);
+    if (!device || !device.characteristics) {
+      console.error('Device not found or no characteristics available:', deviceId);
+      return false;
+    }
+
+    try {
+      // Find command characteristic by direct array access since we know it's the third one
+      const commandChar = device.characteristics[2];
+      
+      // Verify it's the correct characteristic (without hyphens)
+      if (commandChar.uuid !== CHARACTERISTICS.COMMAND) {
+        console.error('Unexpected characteristic UUID:', commandChar.uuid);
+        console.error('Expected:', CHARACTERISTICS.COMMAND);
+        throw new Error('Command characteristic mismatch');
+      }
+
+      let command;
+      switch (eventType) {
+        case 'setLuminosity':
+          command = Buffer.from([
+            COMMANDS.SET_LUMINOSITY, 
+            data[0],  // intensity
+            1        // default delay
+          ]);
+          console.log('Sending luminosity command:', command);
+          break;
+
+        case 'setColor':
+          command = Buffer.from([
+            COMMANDS.SET_COLOR,
+            data[0],  // r
+            data[1],  // g
+            data[2],  // b
+            1        // mode (always 1 in the example)
+          ]);
+          console.log('Sending color command:', command);
+          break;
+
+        default:
+          throw new Error('Unknown command type: ' + eventType);
+      }
+
+      console.log('Writing command to characteristic:', command);
+      await commandChar.writeAsync(command, false);
+      console.log('Command written successfully');
+      return true;
+    } catch (error) {
+      console.error('Failed to send command to device:', error);
+      return false;
+    }
+  }
+
+  formatEventForDevice(eventType, data) {
+    // Format based on device protocol
+    // Example format: [eventType, ...data]
+    return [eventType, ...(Array.isArray(data) ? data : [data])];
+  }
+
+  // Add periodic connection check
+  startConnectionCheck() {
+    setInterval(() => {
+      this.checkConnections();
+    }, 2000); // Check every 2 seconds
+  }
+
+  async checkConnections() {
+    for (const [deviceId, device] of this.connectedDevices) {
+      try {
+        // Check if the device is still connected
+        const state = await device.peripheral.stateAsync();
+        if (state !== 'connected') {
+          console.log('Device lost connection:', device.info.name);
+          this.handleDeviceDisconnect(deviceId);
+        }
+      } catch (error) {
+        console.log('Error checking connection, assuming disconnected:', device.info.name);
+        this.handleDeviceDisconnect(deviceId);
+      }
+    }
+  }
 }
 
 module.exports = { BLEServer };
+
