@@ -6,5 +6,5 @@ module.exports = {
     COMMAND: '00001528-1212-efde-1523-785feabcd123',
     BUTTON_STATUS: '00001525-1212-efde-1523-785feabcd123'
   },
-  WS_PORT: 8080
+  WS_PORT: 54545
 };

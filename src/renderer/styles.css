@@ -127,3 +127,26 @@ input[type="checkbox"] {
 .button:active {
     background-color: #1565c0;
 }
+
+.error-message {
+    padding: 20px;
+    margin: 20px;
+    border-radius: 8px;
+    background-color: #fff3f3;
+    border: 1px solid #ffcdd2;
+}
+
+.error-message h3 {
+    color: #d32f2f;
+    margin-top: 0;
+}
+
+.error-message ul, .error-message ol {
+    margin-left: 20px;
+}
+
+.loading {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+}

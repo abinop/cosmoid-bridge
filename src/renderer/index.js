@@ -1,189 +1,117 @@
-// Renderer process code
-const { ipcRenderer } = require('electron');
-
 document.addEventListener('DOMContentLoaded', () => {
-  const autoLaunchCheckbox = document.getElementById('autoLaunch');
-  const hideWindowButton = document.getElementById('hideWindow');
-  const devicesList = document.getElementById('devicesList');
+  const devicesList = document.getElementById('devices-list');
+  
+  function addOrUpdateDevice(device) {
+    console.log('Adding/Updating device:', device);
+    let deviceElement = document.getElementById(`device-${device.id}`);
+    
+    if (!deviceElement) {
+      console.log('Creating new device element:', device);
+      deviceElement = document.createElement('div');
+      deviceElement.id = `device-${device.id}`;
+      deviceElement.className = 'device-item';
+      devicesList.appendChild(deviceElement);
+    }
 
-  // Setup auto-launch checkbox
-  autoLaunchCheckbox.addEventListener('change', (e) => {
-    ipcRenderer.send('toggle-auto-launch', e.target.checked);
-  });
+    const buttonState = device.connected ? 'Connected' : 'Connect';
+    const buttonDisabled = device.connected ? 'disabled' : '';
 
-  // Setup hide window button
-  hideWindowButton.addEventListener('click', () => {
-    ipcRenderer.send('hide-window');
-  });
-
-  // Handle device updates
-  function updateDevicesList(devices) {
-    console.log('Updating devices list:', devices);
-    devicesList.innerHTML = devices.map(device => `
-      <div class="device-item" data-device-id="${device.id}">
-        <h3>${device.name}</h3>
-        <p>ID: ${device.id}</p>
-        <p>Status: ${device.connected ? '🟢 Connected' : '⚪️ Discovered'}</p>
-        ${!device.connected ? `
-          <button class="button" onclick="connectDevice('${device.id}')">
-            Connect
-          </button>
-        ` : `
-          <div class="device-controls">
-            <button class="button" onclick="setRandomLuminosity('${device.id}')">
-              Random Brightness
-            </button>
-            <button class="button" onclick="setRandomColor('${device.id}')">
-              Random Color
-            </button>
-          </div>
-        `}
+    deviceElement.innerHTML = `
+      <div>
+        <strong>${device.name}</strong>
+        <br>
+        ID: ${device.id}
+        <br>
+        Signal: ${device.rssi || 'N/A'} dBm
+        <br>
+        Status: ${device.connected ? 'Connected' : 'Not Connected'}
       </div>
-    `).join('');
+      <div class="device-controls">
+        <button onclick="connectToDevice('${device.id}')" 
+                ${buttonDisabled}
+                id="connect-${device.id}">
+          ${buttonState}
+        </button>
+      </div>
+    `;
   }
 
-  // Setup WebSocket connection to receive device updates
-  const ws = new WebSocket('ws://localhost:8080');
-  
+  // WebSocket setup
+  const ws = new WebSocket('ws://localhost:54545');
+  window.ws = ws;
+
   ws.onopen = () => {
-    console.log('WebSocket connected');
+    console.log('WebSocket connection established');
     // Request initial device list
     ws.send(JSON.stringify({ type: 'getDevices' }));
-    // Start scanning
-    ws.send(JSON.stringify({ type: 'scan' }));
   };
-  
+
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    console.log('Received message:', message);
-    
-    switch(message.type) {
+    console.log('Received WebSocket message:', message);
+
+    switch (message.type) {
+      case 'devicesList':
+        console.log('Received devices list:', message.devices);
+        devicesList.innerHTML = ''; // Clear existing devices
+        message.devices.forEach(device => addOrUpdateDevice(device));
+        break;
+      case 'deviceFound':
+        console.log('Device found:', message.device);
+        addOrUpdateDevice(message.device);
+        break;
+      case 'deviceUpdated':
+        console.log('Device updated:', message.device);
+        addOrUpdateDevice(message.device);
+        break;
+      case 'deviceConnected':
+        console.log('Device connected:', message.device);
+        addOrUpdateDevice(message.device);
+        break;
       case 'deviceDisconnected':
         console.log('Device disconnected:', message.device);
-        // Remove the device from the UI
-        const deviceElement = document.querySelector(`[data-device-id="${message.device.id}"]`);
-        if (deviceElement) {
-          deviceElement.remove();
-        }
-        // Update the list after removal
-        ws.send(JSON.stringify({ type: 'getDevices' }));
+        addOrUpdateDevice(message.device);
         break;
-
-      case 'event':
-        // Handle generic events
-        handleDeviceEvent(message.event);
-        break;
-
-      case 'deviceFound':
-      case 'deviceConnected':
-        // Request updated device list
-        ws.send(JSON.stringify({ type: 'getDevices' }));
-        break;
-      
-      case 'devicesList':
-        updateDevicesList(message.devices);
-        break;
-        
-      case 'characteristicChanged':
-        console.log('Characteristic changed:', message);
-        break;
-
-      case 'eventResult':
-        console.log(
-          message.success ? 
-          'Command sent successfully' : 
-          'Failed to send command'
-        );
-        break;
-
-      case 'setColor':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const [r, g, b] = message.data;
-          ws.send(JSON.stringify({
-            type: 'sendEvent',
-            deviceId: message.deviceId,
-            eventType: 'setColor',
-            data: [r, g, b]
-          }));
+      case 'connectResult':
+        const button = document.querySelector(`#connect-${message.deviceId}`);
+        if (button) {
+          button.disabled = false;
+          if (message.success) {
+            button.textContent = 'Connected';
+            button.disabled = true;
+          } else {
+            button.textContent = 'Connect';
+            if (message.error) {
+              alert(`Connection failed: ${message.error}`);
+            }
+          }
         }
         break;
-
-      case 'setLuminosity':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const [intensity] = message.data;
-          console.log(`External call: Setting luminosity to ${intensity}% for device ${message.deviceId}`);
-          ws.send(JSON.stringify({
-            type: 'sendEvent',
-            deviceId: message.deviceId,
-            eventType: 'setLuminosity',
-            data: [intensity, 1] // [intensity, delay]
-          }));
-        }
+      case 'error':
+        console.error('Received error:', message.error);
+        alert(`Error: ${message.error}`);
         break;
     }
   };
 
-  // Periodically request device updates
-  setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'getDevices' }));
-    }
-  }, 5000);
+  // Add global functions
+  window.startScanning = function() {
+    console.log('Starting scan...');
+    devicesList.innerHTML = ''; // Clear existing devices
+    ws.send(JSON.stringify({ type: 'scan' }));
+  };
 
-  // Connect to device
-  window.connectDevice = (deviceId) => {
+  window.connectToDevice = function(deviceId) {
+    console.log('Attempting to connect to device:', deviceId);
+    const button = document.querySelector(`#connect-${deviceId}`);
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Connecting...';
+    }
+    
     ws.send(JSON.stringify({
       type: 'connect',
-      deviceId
-    }));
-  };
-
-  function handleDeviceEvent(event) {
-    console.log('Received device event:', event);
-    // Handle different event types
-    switch(event.type) {
-      case 'characteristicChanged':
-        // Handle characteristic changes
-        break;
-      // Add other event type handlers
-    }
-  }
-
-  // Function to send events to device
-  function sendEventToDevice(deviceId, eventType, data) {
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType,
-      data
-    }));
-  }
-
-  // Add command functions
-  window.setRandomLuminosity = (deviceId) => {
-    const luminosity = Math.floor(Math.random() * 100); // 0-100%
-    console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
-    
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType: 'setLuminosity',
-      data: [luminosity, 1] // [intensity, delay]
-    }));
-  };
-
-  window.setRandomColor = (deviceId) => {
-    // Use values between 0-4 to match the example code
-    const r = Math.floor(Math.random() * 5); // 0-4
-    const g = Math.floor(Math.random() * 5); // 0-4
-    const b = Math.floor(Math.random() * 5); // 0-4
-    console.log(`Setting color to RGB(${r},${g},${b}) for device ${deviceId}`);
-    
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType: 'setColor',
-      data: [r, g, b] // The mode (1) is added in the server
+      deviceId: deviceId
     }));
   };
 });

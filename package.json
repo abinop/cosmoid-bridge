@@ -8,27 +8,52 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --debug",
-    "build": "node scripts/build.js",
-    "package": "node scripts/package.js",
-    "package:mac": "electron-builder --mac",
-    "package:win": "electron-builder --win"
+    "build": "electron-builder build",
+    "package:mac": "electron-builder --mac --universal",
+    "package:win": "electron-builder --win --x64 --dir",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild": "electron-builder install-app-deps"
   },
   "build": {
     "appId": "com.filisia.cosmoidbridge",
     "productName": "Cosmoid Bridge",
-    "mac": {
-      "category": "public.app-category.utilities"
-    },
-    "win": {
-      "target": "nsis"
-    },
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@abandonware/noble/**/*"
+    ],
     "files": [
       "src/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/@abandonware/noble/lib/**/*",
+      "node_modules/@abandonware/noble/build/Release/*.node"
     ],
+    "extraResources": [
+      {
+        "from": "node_modules/@abandonware/noble/build/Release/",
+        "to": "noble-bindings",
+        "filter": [
+          "*.node"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "portable": {
+      "requestExecutionLevel": "highest"
+    },
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "assets",
+      "output": "dist"
     }
   },
   "dependencies": {

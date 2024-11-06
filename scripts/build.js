@@ -1,42 +1,41 @@
 // scripts/build.js
-const { build } = require('electron-builder');
-const path = require('path');
+const builder = require('electron-builder');
+const Platform = builder.Platform;
 
-async function buildApp() {
+async function build() {
   try {
-    await build({
+    await builder.build({
+      targets: Platform.WINDOWS.createTarget(),
       config: {
-        directories: {
-          output: path.join(process.cwd(), 'dist'),
-          app: process.cwd()
-        },
-        files: [
-          'src/**/*',
-          'assets/**/*',
-          'package.json'
+        appId: 'com.filisia.cosmoidbridge',
+        productName: 'Cosmoid Bridge',
+        asar: true,
+        extraResources: [
+          {
+            from: 'node_modules/@abandonware/noble/build/Release/',
+            to: 'noble-bindings',
+            filter: ['*.node']
+          }
         ],
-        mac: {
-          icon: 'assets/icon.icns',
-          category: 'public.app-category.utilities',
-          target: ['dmg', 'zip'],
-          darkModeSupport: true,
-          hardenedRuntime: true,
-          gatekeeperAssess: false,
-        },
         win: {
-          icon: 'assets/icon.ico',
-          target: ['nsis'],
+          target: [
+            {
+              target: 'nsis',
+              arch: ['x64']
+            },
+            {
+              target: 'zip',
+              arch: ['x64']
+            }
+          ],
+          icon: 'assets/icon.ico'
         },
         nsis: {
           oneClick: false,
           allowToChangeInstallationDirectory: true,
           createDesktopShortcut: true,
           createStartMenuShortcut: true,
-        },
-        linux: {
-          icon: 'assets/icon.png',
-          target: ['AppImage', 'deb'],
-          category: 'Utility',
+          shortcutName: 'Cosmoid Bridge'
         }
       }
     });
@@ -47,4 +46,4 @@ async function buildApp() {
   }
 }
 
-buildApp();
+build();
