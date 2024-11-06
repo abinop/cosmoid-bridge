@@ -1,6 +1,15 @@
 document.addEventListener('DOMContentLoaded', () => {
   const devicesList = document.getElementById('devices-list');
-  
+  const debugLog = document.getElementById('debug-log');
+
+  function addDebugMessage(message, type = 'info') {
+    const div = document.createElement('div');
+    div.style.color = type === 'error' ? 'red' : type === 'warning' ? 'orange' : 'black';
+    div.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
+    debugLog.appendChild(div);
+    debugLog.scrollTop = debugLog.scrollHeight;
+  }
+
   function addOrUpdateDevice(device) {
     console.log('Adding/Updating device:', device);
     let deviceElement = document.getElementById(`device-${device.id}`);
@@ -41,14 +50,23 @@ document.addEventListener('DOMContentLoaded', () => {
   window.ws = ws;
 
   ws.onopen = () => {
-    console.log('WebSocket connection established');
+    addDebugMessage('WebSocket connected');
     // Request initial device list
     ws.send(JSON.stringify({ type: 'getDevices' }));
   };
 
+  ws.onerror = (error) => {
+    addDebugMessage(`WebSocket error: ${error.message}`, 'error');
+  };
+
+  ws.onclose = () => {
+    addDebugMessage('WebSocket disconnected', 'warning');
+  };
+
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
-    console.log('Received WebSocket message:', message);
+    addDebugMessage(`Received: ${message.type}`);
+    console.log('Full message:', message);
 
     switch (message.type) {
       case 'devicesList':
@@ -96,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Add global functions
   window.startScanning = function() {
-    console.log('Starting scan...');
+    addDebugMessage('Starting BLE scan...');
     devicesList.innerHTML = ''; // Clear existing devices
     ws.send(JSON.stringify({ type: 'scan' }));
   };

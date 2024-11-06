@@ -5,8 +5,8 @@ class WSServer {
   constructor(bleServer) {
     this.bleServer = bleServer;
     this.wss = null;
-    this.port = 54545;  // Set default port
-    this.clients = new Set();  // Add this to track clients
+    this.port = 54545;
+    this.clients = new Set();
     
     // Set up BLE event handlers
     this.bleServer.on('deviceFound', (device) => {
@@ -18,6 +18,7 @@ class WSServer {
     });
 
     this.bleServer.on('deviceUpdated', (device) => {
+      console.log('Broadcasting device update:', device);
       this.broadcast({
         type: 'deviceUpdated',
         device
@@ -42,75 +43,97 @@ class WSServer {
   }
 
   broadcast(message) {
-    console.log('Broadcasting message:', message);
-    if (this.wss) {
-      this.wss.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-          try {
-            client.send(JSON.stringify(message));
-          } catch (error) {
-            console.error('Failed to send message to client:', error);
-          }
-        }
-      });
+    if (!this.wss) {
+      console.warn('WebSocket server not initialized');
+      return;
     }
+    
+    console.log('Broadcasting message:', message);
+    this.wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(JSON.stringify(message));
+        } catch (error) {
+          console.error('Failed to send message to client:', error);
+        }
+      }
+    });
   }
 
-  start(initialPort = this.port) {
+  start() {
     return new Promise((resolve, reject) => {
-      const tryPort = (port) => {
-        console.log(`Attempting to start WebSocket server on port ${port}...`);
+      try {
+        console.log(`Starting WebSocket server on port ${this.port}`);
         
-        try {
-          this.wss = new WebSocket.Server({ 
-            port: port,
-            clientTracking: true
-          });
+        this.wss = new WebSocket.Server({ 
+          port: this.port,
+          clientTracking: true
+        }, () => {
+          console.log('WebSocket server started successfully');
+          this.setupConnectionHandlers();
+          resolve(this.port);
+        });
 
-          this.wss.on('listening', () => {
-            console.log(`WebSocket server started on port ${port}`);
-            this.port = port;
-            this.setupConnectionHandlers();
-            resolve(port);
-          });
-
-          this.wss.on('error', (error) => {
-            if (error.code === 'EADDRINUSE') {
-              console.log(`Port ${port} is in use, trying ${port + 1}...`);
-              this.wss.close();
-              tryPort(port + 1);
-            } else {
-              reject(error);
-            }
-          });
-        } catch (error) {
+        this.wss.on('error', (error) => {
+          console.error('WebSocket server error:', error);
           reject(error);
-        }
-      };
-
-      tryPort(initialPort);
+        });
+      } catch (error) {
+        console.error('Failed to start WebSocket server:', error);
+        reject(error);
+      }
     });
   }
 
   setupConnectionHandlers() {
-    this.wss.on('connection', (ws) => {
-      console.log('New WebSocket client connected');
+    if (!this.wss) {
+      console.error('WebSocket server not initialized');
+      return;
+    }
+
+    this.wss.on('connection', (ws, req) => {
+      console.log('New WebSocket client connected from:', req.connection.remoteAddress);
       this.clients.add(ws);
 
       // Send current devices list to new client
       const devices = this.bleServer.getAllDevices();
-      ws.send(JSON.stringify({
-        type: 'devicesList',
-        devices
-      }));
+      console.log('Sending initial devices list:', devices);
+      
+      try {
+        ws.send(JSON.stringify({
+          type: 'devicesList',
+          devices
+        }));
+      } catch (error) {
+        console.error('Failed to send initial devices list:', error);
+      }
 
       ws.on('message', async (message) => {
         try {
-          const data = JSON.parse(message);
-          console.log('Received message:', data);
-          await this.handleMessage(ws, data);
+          const data = JSON.parse(message.toString());
+          console.log('Received WebSocket message:', data);
+          
+          if (data.type === 'scan') {
+            console.log('Scan requested, checking BLE state...');
+            if (this.bleServer.noble.state === 'poweredOn') {
+              console.log('BLE is powered on, starting scan');
+              await this.bleServer.startScanning();
+            } else {
+              console.log('BLE is not ready, state:', this.bleServer.noble.state);
+              ws.send(JSON.stringify({
+                type: 'error',
+                error: `Bluetooth is not ready (state: ${this.bleServer.noble.state})`
+              }));
+            }
+          } else {
+            await this.handleMessage(ws, data);
+          }
         } catch (error) {
           console.error('Failed to handle message:', error);
+          ws.send(JSON.stringify({
+            type: 'error',
+            error: error.message
+          }));
         }
       });
 
@@ -118,39 +141,39 @@ class WSServer {
         console.log('Client disconnected');
         this.clients.delete(ws);
       });
+
+      ws.on('error', (error) => {
+        console.error('WebSocket client error:', error);
+      });
     });
   }
 
   async handleMessage(ws, data) {
+    console.log('Handling message:', data);
     try {
       switch (data.type) {
         case 'scan':
-          try {
-            await this.bleServer.startScanning();
-          } catch (error) {
-            console.error('Scanning error:', error);
-            ws.send(JSON.stringify({
-              type: 'error',
-              error: `Failed to start scanning: ${error.message}`
-            }));
-          }
+          console.log('Starting BLE scan...');
+          await this.bleServer.startScanning();
           break;
+
         case 'getDevices':
           const devices = this.bleServer.getAllDevices();
+          console.log('Sending devices list:', devices);
           ws.send(JSON.stringify({
             type: 'devicesList',
             devices
           }));
           break;
+
         case 'connect':
-          console.log('Received connect request for device:', data.deviceId);
+          console.log('Connecting to device:', data.deviceId);
           try {
             const success = await this.bleServer.connectToDevice(data.deviceId);
-            console.log('Connect result:', success);
             ws.send(JSON.stringify({
               type: 'connectResult',
               deviceId: data.deviceId,
-              success: success
+              success
             }));
           } catch (error) {
             console.error('Connection error:', error);
@@ -162,64 +185,15 @@ class WSServer {
             }));
           }
           break;
-        case 'write':
-          const writeSuccess = await this.bleServer.writeCharacteristic(
-            data.deviceId,
-            data.characteristicUUID,
-            data.value
-          );
-          ws.send(JSON.stringify({
-            type: 'writeResult',
-            deviceId: data.deviceId,
-            success: writeSuccess
-          }));
-          break;
-        case 'sendEvent':
-          const eventSuccess = await this.bleServer.sendEventToDevice(
-            data.deviceId,
-            data.eventType,
-            data.data
-          );
-          ws.send(JSON.stringify({
-            type: 'eventResult',
-            success: eventSuccess,
-            originalEvent: data
-          }));
-          break;
-        case 'setColor':
-          if (data.deviceId && Array.isArray(data.data)) {
-            const eventSuccess = await this.bleServer.sendEventToDevice(
-              data.deviceId,
-              'setColor',
-              data.data
-            );
-            ws.send(JSON.stringify({
-              type: 'eventResult',
-              success: eventSuccess,
-              originalEvent: data
-            }));
-          }
-          break;
-        case 'setLuminosity':
-          if (data.deviceId && Array.isArray(data.data)) {
-            const eventSuccess = await this.bleServer.sendEventToDevice(
-              data.deviceId,
-              'setLuminosity',
-              data.data
-            );
-            ws.send(JSON.stringify({
-              type: 'eventResult',
-              success: eventSuccess,
-              originalEvent: data
-            }));
-          }
-          break;
+
+        default:
+          console.warn('Unknown message type:', data.type);
       }
     } catch (error) {
-      console.error('Failed to handle message:', error);
+      console.error('Message handling error:', error);
       ws.send(JSON.stringify({
         type: 'error',
-        error: `Message handling error: ${error.message}`
+        error: error.message
       }));
     }
   }
@@ -227,6 +201,7 @@ class WSServer {
   stop() {
     if (this.wss) {
       this.wss.close();
+      this.wss = null;
     }
   }
 }

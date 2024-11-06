@@ -3,32 +3,89 @@ const path = require('path');
 const { app } = require('electron');
 const EventEmitter = require('events');
 
+const SERVICE_UUID = '00001523-1212-efde-1523-785feabcd123';
+const CHARACTERISTICS = {
+  SENSOR: '00001524-1212-efde-1523-785feabcd123',
+  BUTTON_STATUS: '00001525-1212-efde-1523-785feabcd123',
+  COMMAND: '00001528-1212-efde-1523-785feabcd123'
+};
+
+const COMMANDS = {
+  SET_LUMINOSITY: 1,
+  SET_COLOR: 2
+};
+
+const SERVICE_UUID_NO_HYPHENS = SERVICE_UUID.replace(/-/g, '');
+
 let noble;
 const platform = os.platform();
+
+function log(...args) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}]`, ...args);
+}
 
 // Initialize the correct BLE module based on platform
 async function initializeBLE() {
   try {
     if (platform === 'win32') {
-      console.log('Initializing BLE for Windows...');
-      const NobleBindings = require('@abandonware/noble/lib/binding/win32/binding');
-      const Noble = require('@abandonware/noble/lib/noble');
-      const binding = new NobleBindings();
-      noble = new Noble(binding);
-    } else if (platform === 'darwin') {
-      console.log('Initializing BLE for macOS...');
-      noble = require('@abandonware/noble');
+      log('Windows platform detected');
+      log('Loading Windows-specific noble bindings...');
+      
+      // For Windows, try to load the bindings directly
+      const binPath = app.isPackaged 
+        ? path.join(process.resourcesPath, 'noble-bindings', 'binding.node')
+        : path.join(__dirname, '..', '..', 'node_modules', '@abandonware', 'noble', 'build', 'Release', 'binding.node');
+
+      log('Looking for noble bindings at:', binPath);
+      
+      try {
+        // First try the Windows-specific binding
+        const NobleBindings = require('@abandonware/noble/lib/binding/win32/binding');
+        const Noble = require('@abandonware/noble/lib/noble');
+        
+        const binding = new NobleBindings();
+        noble = new Noble(binding);
+        
+        // Initialize the binding explicitly
+        if (typeof binding.init === 'function') {
+          await binding.init();
+        }
+        
+        log('Windows noble bindings initialized successfully');
+      } catch (winError) {
+        log('Failed to load Windows-specific bindings:', winError);
+        // Fallback to default noble
+        log('Trying fallback to default noble');
+        noble = require('@abandonware/noble');
+      }
+
+      // Add additional Windows-specific state handlers
+      noble.on('stateChange', (state) => {
+        log('Noble state changed:', state);
+        if (state === 'poweredOn') {
+          log('Windows BLE adapter powered on');
+        } else {
+          log('Windows BLE adapter state:', state);
+        }
+      });
+
     } else {
-      console.log('Initializing BLE for Linux...');
+      log(`Initializing BLE for ${platform}`);
       noble = require('@abandonware/noble');
     }
 
-    // Wait for noble to be ready
+    log('Waiting for noble to be ready...');
+    log('Current noble state:', noble.state);
+
     await new Promise((resolve, reject) => {
       if (noble.state === 'poweredOn') {
+        log('Noble already powered on');
         resolve();
       } else {
+        log('Waiting for noble to power on...');
         noble.once('stateChange', (state) => {
+          log('Noble state changed to:', state);
           if (state === 'poweredOn') {
             resolve();
           } else {
@@ -36,7 +93,6 @@ async function initializeBLE() {
           }
         });
 
-        // Add timeout
         setTimeout(() => {
           reject(new Error('Bluetooth initialization timeout'));
         }, 10000);
@@ -45,7 +101,7 @@ async function initializeBLE() {
 
     return noble;
   } catch (error) {
-    console.error('Failed to initialize BLE:', error);
+    log('BLE initialization failed:', error);
     throw error;
   }
 }
@@ -72,15 +128,15 @@ class BLEServer extends EventEmitter {
 
   setupNoble() {
     noble.on('stateChange', async (state) => {
-      console.log('Bluetooth adapter state changed to:', state);
+      log('Bluetooth adapter state changed to:', state);
       if (state === 'poweredOn') {
-        console.log('Bluetooth adapter is powered on and ready');
+        log('Bluetooth adapter is powered on and ready');
         this.discoveredDevices.clear();
         this.connectedDevices.clear();
         this.emit('ready');
         await this.startScanning();
       } else {
-        console.log('Bluetooth adapter is not ready:', state);
+        log('Bluetooth adapter is not ready:', state);
         noble.stopScanning();
         for (const [deviceId, device] of this.connectedDevices) {
           try {
@@ -102,56 +158,88 @@ class BLEServer extends EventEmitter {
       }
     });
 
-    // Add state query on initialization
-    console.log('Current Bluetooth adapter state:', noble.state);
-
     noble.on('discover', (peripheral) => {
       this.handleDiscoveredDevice(peripheral);
     });
 
     noble.on('scanStart', () => {
-      console.log('Scanning started for Cosmo devices...');
+      log('Noble scan started');
     });
 
     noble.on('scanStop', () => {
-      console.log('Scanning stopped...');
+      log('Noble scan stopped');
     });
 
-    noble.on('disconnect', (peripheral) => {
-      console.log('Device disconnected:', peripheral.id);
-      this.handleDeviceDisconnect(peripheral.id);
+    noble.on('warning', (message) => {
+      log('Noble warning:', message);
     });
+
+    // Add state query on initialization
+    log('Current Bluetooth adapter state:', noble.state);
   }
 
   startScanning() {
-    console.log('Starting BLE scan for Cosmo devices...');
+    log('Starting BLE scan...');
+    
+    if (noble.state !== 'poweredOn') {
+      log('Warning: Bluetooth adapter is not powered on. Current state:', noble.state);
+      
+      if (platform === 'win32') {
+        // On Windows, try to force initialize
+        log('Attempting to reinitialize BLE on Windows...');
+        noble.emit('stateChange', 'poweredOn');
+      } else {
+        this.emit('error', new Error(`Bluetooth adapter is not ready. State: ${noble.state}`));
+        return;
+      }
+    }
     
     noble.stopScanning(() => {
-      // Scan for all devices instead of filtering by UUID
-      noble.startScanning([], true, (error) => {
+      log('Previous scanning stopped');
+      
+      // For Windows, don't filter by service UUID initially
+      const scanOptions = platform === 'win32' ? [] : [SERVICE_UUID];
+      
+      noble.startScanning(scanOptions, true, (error) => {
         if (error) {
-          console.error('Failed to start scanning:', error);
+          log('Failed to start scanning:', error);
+          this.emit('error', error);
         } else {
-          console.log('Scanning started for all devices, will filter Cosmo devices in handler');
+          log('Scanning started successfully');
+          if (platform === 'win32') {
+            log('Windows: Scanning for all devices, will filter in handler');
+          }
         }
       });
     });
   }
 
   handleDiscoveredDevice(peripheral) {
-    // Log all discovered devices for debugging
-    console.log('Found device:', {
+    log('Raw device discovered:', {
       id: peripheral.id,
+      address: peripheral.address,
+      addressType: peripheral.addressType,
       name: peripheral.advertisement.localName,
       serviceUuids: peripheral.advertisement.serviceUuids,
       manufacturerData: peripheral.advertisement.manufacturerData ? 
-        peripheral.advertisement.manufacturerData.toString('hex') : 'none'
+        peripheral.advertisement.manufacturerData.toString('hex') : 'none',
+      rssi: peripheral.rssi,
+      state: peripheral.state
     });
 
-    // Check if this is a Cosmo device by name
-    if (peripheral.advertisement.localName === 'Cosmo') {
+    // Check if this is a Cosmo device
+    const isCosmoDevice = 
+      peripheral.advertisement.localName === 'Cosmo' ||
+      (peripheral.advertisement.serviceUuids && 
+       peripheral.advertisement.serviceUuids.some(uuid => 
+         uuid.replace(/-/g, '').toLowerCase() === SERVICE_UUID_NO_HYPHENS.toLowerCase()
+       ));
+
+    if (isCosmoDevice) {
+      log('Found Cosmo device:', peripheral.advertisement.localName);
+      
       if (!this.discoveredDevices.has(peripheral.id)) {
-        console.log('Adding new Cosmo device:', {
+        log('Adding new Cosmo device:', {
           id: peripheral.id,
           name: peripheral.advertisement.localName,
           rssi: peripheral.rssi
@@ -165,24 +253,9 @@ class BLEServer extends EventEmitter {
         };
 
         this.discoveredDevices.set(peripheral.id, { peripheral, info: deviceInfo });
-        
-        peripheral.setMaxListeners(2);
-        
-        peripheral.on('connect', () => {
-          console.log('Device connected:', deviceInfo.name);
-          deviceInfo.connected = true;
-          this.connectedDevices.set(peripheral.id, { peripheral, info: deviceInfo });
-          this.emit('deviceConnected', deviceInfo);
-        });
-
-        peripheral.on('disconnect', () => {
-          console.log('Device disconnected:', deviceInfo.name);
-          this.handleDeviceDisconnect(peripheral.id);
-        });
-
-        // Emit deviceFound event
         this.emit('deviceFound', deviceInfo);
       } else {
+        // Update existing device
         const device = this.discoveredDevices.get(peripheral.id);
         if (Math.abs(device.info.rssi - peripheral.rssi) > 5) {
           device.info.rssi = peripheral.rssi;
