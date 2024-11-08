@@ -1,20 +1,12 @@
 // BLE server implementation for device management
 const noble = require('@abandonware/noble');
 const EventEmitter = require('events');
-
-// Define the service UUIDs without hyphens to match the device format
-const SERVICE_UUID = '000015231212efde1523785feabcd123';
-const BATTERY_SERVICE_UUID = '180F';
-const DEVICE_INFO_SERVICE = '180a';
-const DEVICE_SERIAL_NUMBER = '2a25';
-const DEVICE_FIRMWARE_VERSION = '2a26';
-const DEVICE_HARDWARE_VERSION = '2a27';
-const DEVICE_BATTERY_LEVEL = '2a19';
-const CHARACTERISTICS = {
-  SENSOR: '000015241212efde1523785feabcd123',
-  BUTTON_STATUS: '000015251212efde1523785feabcd123',
-  COMMAND: '000015281212efde1523785feabcd123'
-};
+const { 
+  BLE_SERVICE_UUID,
+  BLE_BATTERY_SERVICE_UUID,
+  BLE_DEVICE_INFO_SERVICE,
+  BLE_CHARACTERISTICS 
+} = require('../common/constants');
 
 // Command definitions
 const COMMANDS = {
@@ -69,7 +61,7 @@ class BLEServer extends EventEmitter {
     // First stop any existing scan
     noble.stopScanning(() => {
       // Start scanning only for Cosmo service UUID
-      noble.startScanning([SERVICE_UUID], true, (error) => {
+      noble.startScanning([BLE_SERVICE_UUID], true, (error) => {
         if (error) {
           console.error('Failed to start scanning:', error);
         }
@@ -155,7 +147,7 @@ class BLEServer extends EventEmitter {
 
     try {
       // Try to read battery characteristic if it exists
-      const batteryChar = device.characteristics?.get('BATTERY_LEVEL');
+      const batteryChar = device.characteristics?.get(BLE_CHARACTERISTICS.BATTERY_LEVEL);
       if (batteryChar) {
         const value = await batteryChar.readAsync();
         device.info.batteryLevel = value[0];
@@ -201,8 +193,8 @@ class BLEServer extends EventEmitter {
 
             try {
               switch(characteristic.uuid) {
-                case CHARACTERISTICS.SENSOR:
-                case CHARACTERISTICS.BUTTON_STATUS:
+                case BLE_CHARACTERISTICS.SENSOR:
+                case BLE_CHARACTERISTICS.BUTTON_STATUS:
                   // console.log('Setting up notifications for:', characteristic.uuid);
                   await characteristic.subscribeAsync();
                   characteristic.on('data', (data) => {
@@ -210,22 +202,22 @@ class BLEServer extends EventEmitter {
                   });
                   break;
 
-                case DEVICE_SERIAL_NUMBER:
+                case BLE_CHARACTERISTICS.SERIAL_NUMBER:
                   const serialData = await characteristic.readAsync();
                   device.info.serialNumber = serialData.toString().trim();
                   break;
 
-                case DEVICE_FIRMWARE_VERSION:
+                case BLE_CHARACTERISTICS.FIRMWARE_VERSION:
                   const fwData = await characteristic.readAsync();
                   device.info.firmwareVersion = fwData.toString().trim();
                   break;
 
-                case DEVICE_HARDWARE_VERSION:
+                case BLE_CHARACTERISTICS.HARDWARE_VERSION:
                   const hwData = await characteristic.readAsync();
                   device.info.hardwareVersion = hwData.toString().trim();
                   break;
 
-                case DEVICE_BATTERY_LEVEL:
+                case BLE_CHARACTERISTICS.BATTERY_LEVEL:
                   const batteryData = await characteristic.readAsync();
                   device.info.batteryLevel = batteryData[0];
                   
@@ -268,37 +260,54 @@ class BLEServer extends EventEmitter {
     if (!device) return;
 
     switch(characteristicUuid) {
-      case CHARACTERISTICS.SENSOR:
+      case BLE_CHARACTERISTICS.SENSOR:
         device.info.sensorValue = data[0];
         break;
 
-      case DEVICE_SERIAL_NUMBER:
+      case BLE_CHARACTERISTICS.SERIAL_NUMBER:
         device.info.serialNumber = data.toString().trim();
         console.log('Serial Number:', device.info.serialNumber);
         break;
 
-      case DEVICE_FIRMWARE_VERSION:
+      case BLE_CHARACTERISTICS.FIRMWARE_VERSION:
         device.info.firmwareVersion = data.toString().trim();
         console.log('Firmware Version:', device.info.firmwareVersion);
         break;
 
-      case DEVICE_HARDWARE_VERSION:
+      case BLE_CHARACTERISTICS.HARDWARE_VERSION:
         device.info.hardwareVersion = data.toString().trim();
         console.log('Hardware Version:', device.info.hardwareVersion);
         break;
 
-      case DEVICE_BATTERY_LEVEL:
+      case BLE_CHARACTERISTICS.BATTERY_LEVEL:
         device.info.batteryLevel = data[0];
         console.log('Battery Level:', device.info.batteryLevel);
         break;
 
-      case CHARACTERISTICS.BUTTON_STATUS:
+      case BLE_CHARACTERISTICS.BUTTON_STATUS:
         const buttonValue = data[0];
+        const forceValue = data[1] || 0; // Get force value from second byte if available
+
+        
         if (buttonValue === 0) {
-          this.emit('buttonPressed', { deviceId, value: buttonValue });
+          this.emit('buttonPressed', { 
+            deviceId, 
+            value: buttonValue,
+            force: forceValue 
+          });
         } else {
-          this.emit('buttonReleased', { deviceId });
+          this.emit('buttonReleased', { 
+            deviceId,
+            force: forceValue 
+          });
         }
+        
+        // Emit a general button event that includes all info
+        this.emit('buttonEvent', {
+          deviceId,
+          state: buttonValue === 0 ? 'pressed' : 'released',
+          force: forceValue
+        });
         break;
     }
 
@@ -309,7 +318,7 @@ class BLEServer extends EventEmitter {
     const device = this.connectedDevices.get(deviceId);
     if (device && device.characteristics) {
       const characteristic = device.characteristics
-        .find(c => c.uuid === SERVICE_UUID);
+        .find(c => c.uuid === BLE_SERVICE_UUID);
       
       if (characteristic) {
         await characteristic.writeAsync(Buffer.from(value), false);
@@ -334,7 +343,7 @@ class BLEServer extends EventEmitter {
 
     try {
       // Get command characteristic by UUID
-      const commandChar = device.characteristics.get(CHARACTERISTICS.COMMAND);
+      const commandChar = device.characteristics.get(BLE_CHARACTERISTICS.COMMAND);
       // console.log('Command characteristic:', commandChar?.uuid);
       
       if (!commandChar) {
