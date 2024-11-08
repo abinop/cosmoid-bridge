@@ -159,7 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Add command functions
   window.setRandomLuminosity = (deviceId) => {
-    const luminosity = Math.floor(Math.random() * 100); // 0-100%
+    const luminosity = Math.floor(Math.random() * 60) + 5; // 5-64%
     console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
     
     ws.send(JSON.stringify({

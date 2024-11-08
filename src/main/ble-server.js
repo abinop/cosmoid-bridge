@@ -174,27 +174,27 @@ class BLEServer extends EventEmitter {
     
     if (device) {
       try {
-        console.log('Attempting to connect to Cosmo device:', device.info.name);
+        // console.log('Attempting to connect to Cosmo device:', device.info.name);
         await device.peripheral.connectAsync();
-        console.log('Connected successfully to:', device.info.name);
+        // console.log('Connected successfully to:', device.info.name);
 
         this.connectedDevices.set(deviceId, device);
-        console.log('Discovering services and characteristics...');
+        // console.log('Discovering services and characteristics...');
         
         // Discover all services
         const services = await device.peripheral.discoverServicesAsync();
-        console.log('Discovered services:', services.map(s => s.uuid));
+        // console.log('Discovered services:', services.map(s => s.uuid));
 
         device.characteristics = new Map();
 
         // Process each service
         for (const service of services) {
-          console.log('Processing service:', service.uuid);
+          // console.log('Processing service:', service.uuid);
           // Discover all characteristics for each service
           const characteristics = await service.discoverCharacteristicsAsync();
           
           for (const characteristic of characteristics) {
-            console.log('Found characteristic:', characteristic.uuid);
+            // console.log('Found characteristic:', characteristic.uuid);
             
             // Store all characteristics
             device.characteristics.set(characteristic.uuid, characteristic);
@@ -203,7 +203,7 @@ class BLEServer extends EventEmitter {
               switch(characteristic.uuid) {
                 case CHARACTERISTICS.SENSOR:
                 case CHARACTERISTICS.BUTTON_STATUS:
-                  console.log('Setting up notifications for:', characteristic.uuid);
+                  // console.log('Setting up notifications for:', characteristic.uuid);
                   await characteristic.subscribeAsync();
                   characteristic.on('data', (data) => {
                     this.handleCharacteristicData(deviceId, characteristic.uuid, data);
@@ -211,31 +211,23 @@ class BLEServer extends EventEmitter {
                   break;
 
                 case DEVICE_SERIAL_NUMBER:
-                  console.log('Reading serial number');
                   const serialData = await characteristic.readAsync();
                   device.info.serialNumber = serialData.toString().trim();
-                  console.log('Serial Number:', device.info.serialNumber);
                   break;
 
                 case DEVICE_FIRMWARE_VERSION:
-                  console.log('Reading firmware version');
                   const fwData = await characteristic.readAsync();
                   device.info.firmwareVersion = fwData.toString().trim();
-                  console.log('Firmware Version:', device.info.firmwareVersion);
                   break;
 
                 case DEVICE_HARDWARE_VERSION:
-                  console.log('Reading hardware version');
                   const hwData = await characteristic.readAsync();
                   device.info.hardwareVersion = hwData.toString().trim();
-                  console.log('Hardware Version:', device.info.hardwareVersion);
                   break;
 
                 case DEVICE_BATTERY_LEVEL:
-                  console.log('Reading battery level');
                   const batteryData = await characteristic.readAsync();
                   device.info.batteryLevel = batteryData[0];
-                  console.log('Battery Level:', device.info.batteryLevel);
                   
                   // Set up battery notifications if supported
                   await characteristic.subscribeAsync();
@@ -343,7 +335,7 @@ class BLEServer extends EventEmitter {
     try {
       // Get command characteristic by UUID
       const commandChar = device.characteristics.get(CHARACTERISTICS.COMMAND);
-      console.log('Command characteristic:', commandChar?.uuid);
+      // console.log('Command characteristic:', commandChar?.uuid);
       
       if (!commandChar) {
         console.error('Command characteristic not found');
@@ -359,7 +351,7 @@ class BLEServer extends EventEmitter {
             data[0],  // intensity
             1        // default delay
           ]);
-          console.log('Sending luminosity command:', command);
+          // console.log('Sending luminosity command:', command);
           break;
 
         case 'setColor':
@@ -370,16 +362,16 @@ class BLEServer extends EventEmitter {
             data[2],  // b
             1        // mode (always 1 in the example)
           ]);
-          console.log('Sending color command:', command);
+          // console.log('Sending color command:', command);
           break;
 
         default:
           throw new Error('Unknown command type: ' + eventType);
       }
 
-      console.log('Writing command to characteristic:', command);
+      // console.log('Writing command to characteristic:', command);
       await commandChar.writeAsync(command, false);
-      console.log('Command written successfully');
+      // console.log('Command written successfully');
       return true;
     } catch (error) {
       console.error('Failed to send command to device:', error);
