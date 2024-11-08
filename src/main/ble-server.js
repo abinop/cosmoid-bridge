@@ -14,9 +14,19 @@ const COMMANDS = {
   SET_COLOR: 2        // [2, r, g, b, 1]
 };
 
+function normalizeUUID(uuid) {
+    return uuid.toLowerCase().replace(/-/g, '');
+}
+
 class BLEServer extends EventEmitter {
   constructor() {
     super();
+    console.log('🔍 BLE Characteristics we are looking for:', {
+      SENSOR: BLE_CHARACTERISTICS.SENSOR,
+      BUTTON_STATUS: BLE_CHARACTERISTICS.BUTTON_STATUS,
+      BATTERY_LEVEL: BLE_CHARACTERISTICS.BATTERY_LEVEL,
+      SERVICE: BLE_SERVICE_UUID
+    });
     this.discoveredDevices = new Map(); // Track all discovered devices
     this.connectedDevices = new Map();
     this.setupNoble();
@@ -175,63 +185,65 @@ class BLEServer extends EventEmitter {
         
         // Discover all services
         const services = await device.peripheral.discoverServicesAsync();
-        // console.log('Discovered services:', services.map(s => s.uuid));
+        // console.log('🔍 Discovered services:', services.map(s => s.uuid));
 
         device.characteristics = new Map();
 
         // Process each service
         for (const service of services) {
-          // console.log('Processing service:', service.uuid);
+          // console.log('🔍 Processing service:', service.uuid);
           // Discover all characteristics for each service
           const characteristics = await service.discoverCharacteristicsAsync();
+          // console.log('🔍 Found characteristics for service:', characteristics.map(c => c.uuid));
           
           for (const characteristic of characteristics) {
-            // console.log('Found characteristic:', characteristic.uuid);
+            const normalizedCharUUID = normalizeUUID(characteristic.uuid);
+            // console.log('Processing characteristic:', {
+            //     uuid: characteristic.uuid,
+            //     isCommand: normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.COMMAND)
+            // });
             
-            // Store all characteristics
+            // Store characteristic with both formats of UUID
             device.characteristics.set(characteristic.uuid, characteristic);
+            if (characteristic.uuid.includes('-')) {
+                // Also store without dashes for normalized lookup
+                device.characteristics.set(characteristic.uuid.replace(/-/g, ''), characteristic);
+            } else {
+                // Also store with dashes for original format lookup
+                const uuidWithDashes = characteristic.uuid.replace(
+                    /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i,
+                    '$1-$2-$3-$4-$5'
+                );
+                device.characteristics.set(uuidWithDashes, characteristic);
+            }
 
             try {
-              switch(characteristic.uuid) {
-                case BLE_CHARACTERISTICS.SENSOR:
-                case BLE_CHARACTERISTICS.BUTTON_STATUS:
-                  // console.log('Setting up notifications for:', characteristic.uuid);
-                  await characteristic.subscribeAsync();
-                  characteristic.on('data', (data) => {
-                    this.handleCharacteristicData(deviceId, characteristic.uuid, data);
-                  });
-                  break;
-
-                case BLE_CHARACTERISTICS.SERIAL_NUMBER:
-                  const serialData = await characteristic.readAsync();
-                  device.info.serialNumber = serialData.toString().trim();
-                  break;
-
-                case BLE_CHARACTERISTICS.FIRMWARE_VERSION:
-                  const fwData = await characteristic.readAsync();
-                  device.info.firmwareVersion = fwData.toString().trim();
-                  break;
-
-                case BLE_CHARACTERISTICS.HARDWARE_VERSION:
-                  const hwData = await characteristic.readAsync();
-                  device.info.hardwareVersion = hwData.toString().trim();
-                  break;
-
-                case BLE_CHARACTERISTICS.BATTERY_LEVEL:
-                  const batteryData = await characteristic.readAsync();
-                  device.info.batteryLevel = batteryData[0];
-                  
-                  // Set up battery notifications if supported
-                  await characteristic.subscribeAsync();
-                  characteristic.on('data', (data) => {
-                    device.info.batteryLevel = data[0];
-                    console.log('Battery Level Updated:', device.info.batteryLevel);
-                    this.emit('deviceUpdated', this.getAllDevices());
-                  });
-                  break;
-              }
+                if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SENSOR)) {
+                    await characteristic.subscribeAsync();
+                    characteristic.on('data', (data) => {
+                        this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.SENSOR, data);
+                    });
+                }
+                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BUTTON_STATUS)) {
+                    await characteristic.subscribeAsync();
+                    characteristic.on('data', (data) => {
+                        this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BUTTON_STATUS, data);
+                    });
+                }
+                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BATTERY_LEVEL)) {
+                    const batteryData = await characteristic.readAsync();
+                    device.info.batteryLevel = batteryData[0];
+                    await characteristic.subscribeAsync();
+                    characteristic.on('data', (data) => {
+                        this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BATTERY_LEVEL, data);
+                    });
+                }
+                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SERIAL_NUMBER)) {
+                    const serialData = await characteristic.readAsync();
+                    device.info.serialNumber = serialData.toString().trim();
+                }
             } catch (error) {
-              console.error(`Error handling characteristic ${characteristic.uuid}:`, error);
+                console.error('Error setting up characteristic:', characteristic.uuid, error.message);
             }
           }
         }
@@ -262,52 +274,42 @@ class BLEServer extends EventEmitter {
     switch(characteristicUuid) {
       case BLE_CHARACTERISTICS.SENSOR:
         device.info.sensorValue = data[0];
-        break;
-
-      case BLE_CHARACTERISTICS.SERIAL_NUMBER:
-        device.info.serialNumber = data.toString().trim();
-        console.log('Serial Number:', device.info.serialNumber);
-        break;
-
-      case BLE_CHARACTERISTICS.FIRMWARE_VERSION:
-        device.info.firmwareVersion = data.toString().trim();
-        console.log('Firmware Version:', device.info.firmwareVersion);
-        break;
-
-      case BLE_CHARACTERISTICS.HARDWARE_VERSION:
-        device.info.hardwareVersion = data.toString().trim();
-        console.log('Hardware Version:', device.info.hardwareVersion);
-        break;
-
-      case BLE_CHARACTERISTICS.BATTERY_LEVEL:
-        device.info.batteryLevel = data[0];
-        console.log('Battery Level:', device.info.batteryLevel);
+        // console.log('Sensor:', {
+        //   value: data[0]
+        // });
+        
+        this.emit('characteristicChanged', {
+          deviceId,
+          characteristicUUID: characteristicUuid,
+          value: Array.from(data)
+        });
         break;
 
       case BLE_CHARACTERISTICS.BUTTON_STATUS:
         const buttonValue = data[0];
-        const forceValue = data[1] || 0; // Get force value from second byte if available
-
+        const forceValue = data[1] || 0;
         
-        if (buttonValue === 0) {
-          this.emit('buttonPressed', { 
-            deviceId, 
-            value: buttonValue,
-            force: forceValue 
-          });
-        } else {
-          this.emit('buttonReleased', { 
-            deviceId,
-            force: forceValue 
-          });
-        }
+        console.log('Button:', {
+          state: buttonValue === 0 ? 'pressed' : 'released',
+          force: forceValue
+        });
         
-        // Emit a general button event that includes all info
         this.emit('buttonEvent', {
           deviceId,
           state: buttonValue === 0 ? 'pressed' : 'released',
           force: forceValue
         });
+
+        this.emit('characteristicChanged', {
+          deviceId,
+          characteristicUUID: characteristicUuid,
+          value: Array.from(data)
+        });
+        break;
+
+      case BLE_CHARACTERISTICS.BATTERY_LEVEL:
+        device.info.batteryLevel = data[0];
+        console.log('Battery:', data[0] + '%');
         break;
     }
 
@@ -316,75 +318,87 @@ class BLEServer extends EventEmitter {
 
   async writeCharacteristic(deviceId, characteristicUUID, value) {
     const device = this.connectedDevices.get(deviceId);
-    if (device && device.characteristics) {
-      const characteristic = device.characteristics
-        .find(c => c.uuid === BLE_SERVICE_UUID);
-      
-      if (characteristic) {
+    if (!device || !device.characteristics) {
+        console.error('Device not found or no characteristics:', deviceId);
+        return false;
+    }
+
+    const characteristic = device.characteristics.get(characteristicUUID);
+    if (!characteristic) {
+        console.error('Characteristic not found:', characteristicUUID);
+        return false;
+    }
+
+    try {
         await characteristic.writeAsync(Buffer.from(value), false);
         return true;
-      }
+    } catch (error) {
+        console.error('Failed to write characteristic:', error);
+        return false;
     }
-    return false;
   }
 
   // Add method to send events to device
   async sendEventToDevice(deviceId, eventType, data) {
     const device = this.connectedDevices.get(deviceId);
     if (!device) {
-      console.error('Device not found:', deviceId);
-      return false;
+        console.error('Device not found:', deviceId);
+        return false;
     }
     
     if (!device.characteristics) {
-      console.error('No characteristics available for device:', deviceId);
-      return false;
+        console.error('No characteristics available for device:', deviceId);
+        return false;
     }
 
     try {
-      // Get command characteristic by UUID
-      const commandChar = device.characteristics.get(BLE_CHARACTERISTICS.COMMAND);
-      // console.log('Command characteristic:', commandChar?.uuid);
-      
-      if (!commandChar) {
-        console.error('Command characteristic not found');
-        console.log('Available characteristics:', Array.from(device.characteristics.keys()));
-        return false;
-      }
+        // Try to find command characteristic with different UUID formats
+        const commandUUID = BLE_CHARACTERISTICS.COMMAND;
+        const normalizedCommandUUID = normalizeUUID(commandUUID);
+        
+        let commandChar = device.characteristics.get(commandUUID) || 
+                         device.characteristics.get(normalizedCommandUUID);
 
-      let command;
-      switch (eventType) {
-        case 'setLuminosity':
-          command = Buffer.from([
-            COMMANDS.SET_LUMINOSITY, 
-            data[0],  // intensity
-            1        // default delay
-          ]);
-          // console.log('Sending luminosity command:', command);
-          break;
+        if (!commandChar) {
+            console.error('Command characteristic not found:', {
+                looking_for: [commandUUID, normalizedCommandUUID],
+                available: Array.from(device.characteristics.keys())
+            });
+            return false;
+        }
 
-        case 'setColor':
-          command = Buffer.from([
-            COMMANDS.SET_COLOR,
-            data[0],  // r
-            data[1],  // g
-            data[2],  // b
-            1        // mode (always 1 in the example)
-          ]);
-          // console.log('Sending color command:', command);
-          break;
+        let command;
+        switch (eventType) {
+            case 'setLuminosity':
+                command = Buffer.from([
+                    COMMANDS.SET_LUMINOSITY, 
+                    data[0],  // intensity
+                    1        // default delay
+                ]);
+                console.log('Sending luminosity command:', Array.from(command));
+                break;
 
-        default:
-          throw new Error('Unknown command type: ' + eventType);
-      }
+            case 'setColor':
+                command = Buffer.from([
+                    COMMANDS.SET_COLOR,
+                    data[0],  // r
+                    data[1],  // g
+                    data[2],  // b
+                    1        // mode
+                ]);
+                console.log('Sending color command:', Array.from(command));
+                break;
 
-      // console.log('Writing command to characteristic:', command);
-      await commandChar.writeAsync(command, false);
-      // console.log('Command written successfully');
-      return true;
+            default:
+                throw new Error('Unknown command type: ' + eventType);
+        }
+
+        await commandChar.writeAsync(command, false);
+        console.log('Command sent successfully');
+        return true;
     } catch (error) {
-      console.error('Failed to send command to device:', error);
-      return false;
+        console.error('Failed to send command to device:', error);
+        return false;
     }
   }
 

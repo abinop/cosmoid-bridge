@@ -118,6 +118,17 @@ document.addEventListener('DOMContentLoaded', () => {
           }));
         }
         break;
+
+      case 'buttonEvent':
+        setDeviceValues(prev => ({
+          ...prev,
+          [message.deviceId]: {
+            ...prev[message.deviceId],
+            buttonState: message.state,
+            forceValue: message.force
+          }
+        }));
+        break;
     }
   };
 
