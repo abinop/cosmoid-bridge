@@ -21,28 +21,19 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('Updating devices list:', devices);
     devicesList.innerHTML = devices.map(device => `
       <div class="device-item" data-device-id="${device.id}">
-        <h3>${device.name}</h3>
-        <p>ID: ${device.id}</p>
-        <p>Serial: ${device.serialNumber || 'Unknown'}</p>
-        ${device.batteryLevel !== null ? 
-          `<p>Battery: ${device.batteryLevel}%</p>` : 
-          '<p>Battery: N/A</p>'
-        }
-        <p>Status: ${device.connected ? '🟢 Connected' : '⚪️ Discovered'}</p>
-        ${!device.connected ? `
-          <button class="button" onclick="connectDevice('${device.id}')">
-            Connect
-          </button>
-        ` : `
-          <div class="device-controls">
-            <button class="button" onclick="setRandomLuminosity('${device.id}')">
-              Random Brightness
-            </button>
-            <button class="button" onclick="setRandomColor('${device.id}')">
-              Random Color
-            </button>
-          </div>
-        `}
+        <div class="device-info-container">
+          <span class="status-indicator ${device.connected ? 'connected' : ''}">${device.connected ? '🟢' : '⚪️'}</span>
+          ${device.serialNumber ? `<span class="device-info">Serial: ${device.serialNumber}</span>` : ''}
+          ${device.batteryLevel !== null ? `<span class="device-info">Battery: ${device.batteryLevel}%</span>` : ''}
+        </div>
+        <div class="device-controls">
+          ${!device.connected ? `
+            <button class="button" onclick="connectDevice('${device.id}')">Connect</button>
+          ` : `
+            <button class="button" onclick="setRandomLuminosity('${device.id}')">Random Brightness</button>
+            <button class="button" onclick="setRandomColor('${device.id}')">Random Color</button>
+          `}
+        </div>
       </div>
     `).join('');
   }
