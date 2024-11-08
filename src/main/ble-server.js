@@ -274,13 +274,10 @@ class BLEServer extends EventEmitter {
     switch(characteristicUuid) {
       case BLE_CHARACTERISTICS.SENSOR:
         device.info.sensorValue = data[0];
-        // console.log('Sensor:', {
-        //   value: data[0]
-        // });
         
         this.emit('characteristicChanged', {
           deviceId,
-          characteristicUUID: characteristicUuid,
+          characteristicUUID: normalizeUUID(characteristicUuid),
           value: Array.from(data)
         });
         break;
@@ -289,10 +286,7 @@ class BLEServer extends EventEmitter {
         const buttonValue = data[0];
         const forceValue = data[1] || 0;
         
-        console.log('Button:', {
-          state: buttonValue === 0 ? 'pressed' : 'released',
-          force: forceValue
-        });
+        device.info.forceValue = forceValue;
         
         this.emit('buttonEvent', {
           deviceId,
@@ -302,7 +296,7 @@ class BLEServer extends EventEmitter {
 
         this.emit('characteristicChanged', {
           deviceId,
-          characteristicUUID: characteristicUuid,
+          characteristicUUID: normalizeUUID(characteristicUuid),
           value: Array.from(data)
         });
         break;
@@ -310,10 +304,26 @@ class BLEServer extends EventEmitter {
       case BLE_CHARACTERISTICS.BATTERY_LEVEL:
         device.info.batteryLevel = data[0];
         console.log('Battery:', data[0] + '%');
+        
+        this.emit('characteristicChanged', {
+          deviceId,
+          characteristicUUID: normalizeUUID(characteristicUuid),
+          value: [data[0]]
+        });
         break;
     }
 
-    this.emit('deviceUpdated', this.getAllDevices());
+    this.emit('deviceUpdated', {
+      devices: this.getAllDevices(),
+      deviceInfo: {
+        [deviceId]: {
+          serialNumber: device.info.serialNumber,
+          hardwareRevision: device.info.hardwareVersion,
+          firmwareRevision: device.info.firmwareVersion,
+          forceValue: device.info.forceValue
+        }
+      }
+    });
   }
 
   async writeCharacteristic(deviceId, characteristicUUID, value) {

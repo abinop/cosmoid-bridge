@@ -44,19 +44,33 @@ class WSServer {
     });
 
     this.bleServer.on('characteristicChanged', (data) => {
-      // console.log('🟣 WS Server - Forwarding Characteristic Change:', {
-      //   deviceId: data.deviceId,
-      //   characteristicUUID: data.characteristicUUID,
-      //   value: Array.from(data.value)
-      // });
       this.broadcast({
         type: 'characteristicChanged',
         ...data
       });
     });
 
+    this.bleServer.on('deviceUpdated', (data) => {
+      // Send devices list update
+      this.broadcast({
+        type: 'devicesList',
+        devices: data.devices
+      });
+
+      // Send device info update
+      if (data.deviceInfo) {
+        Object.entries(data.deviceInfo).forEach(([deviceId, info]) => {
+          this.broadcast({
+            type: 'deviceInfo',
+            deviceId,
+            ...info
+          });
+        });
+      }
+    });
+
     this.bleServer.on('buttonEvent', (data) => {
-      console.log('🟣 WS Server - Forwarding Button Event:', data);
+      // console.log('🟣 WS Server - Forwarding Button Event:', data);
       this.broadcast({
         type: 'buttonEvent',
         ...data
