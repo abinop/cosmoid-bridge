@@ -66,3 +66,5 @@ coverage/
 # Temporary files
 tmp/
 temp/
+
+__help/

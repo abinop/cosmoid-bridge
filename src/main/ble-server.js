@@ -4,11 +4,16 @@ const EventEmitter = require('events');
 
 // Define the service UUIDs without hyphens to match the device format
 const SERVICE_UUID = '000015231212efde1523785feabcd123';
+const BATTERY_SERVICE_UUID = '180F';
+const DEVICE_INFO_SERVICE = '180a';
+const DEVICE_SERIAL_NUMBER = '2a25';
+const DEVICE_FIRMWARE_VERSION = '2a26';
+const DEVICE_HARDWARE_VERSION = '2a27';
+const DEVICE_BATTERY_LEVEL = '2a19';
 const CHARACTERISTICS = {
   SENSOR: '000015241212efde1523785feabcd123',
   BUTTON_STATUS: '000015251212efde1523785feabcd123',
-  COMMAND: '000015281212efde1523785feabcd123',
-  BATTERY_LEVEL: '000015291212efde1523785feabcd123'
+  COMMAND: '000015281212efde1523785feabcd123'
 };
 
 // Command definitions
@@ -173,82 +178,88 @@ class BLEServer extends EventEmitter {
         await device.peripheral.connectAsync();
         console.log('Connected successfully to:', device.info.name);
 
-        // Store in connected devices
         this.connectedDevices.set(deviceId, device);
-
         console.log('Discovering services and characteristics...');
         
-        // First discover services
-        const services = await device.peripheral.discoverServicesAsync([SERVICE_UUID]);
+        // Discover all services
+        const services = await device.peripheral.discoverServicesAsync();
         console.log('Discovered services:', services.map(s => s.uuid));
 
-        if (!services || services.length === 0) {
-          throw new Error('No matching services found');
-        }
-
-        // Then discover characteristics
-        const service = services[0];
-        const characteristicUUIDs = [
-          CHARACTERISTICS.SENSOR,
-          CHARACTERISTICS.BUTTON_STATUS,
-          CHARACTERISTICS.COMMAND,
-          CHARACTERISTICS.BATTERY_LEVEL
-        ];
-        
-        console.log('Looking for characteristics:', characteristicUUIDs);
-        const characteristics = await service.discoverCharacteristicsAsync(characteristicUUIDs);
-        console.log('Found characteristics:', characteristics.map(c => c.uuid));
-        
-        if (!characteristics || characteristics.length === 0) {
-          throw new Error('No characteristics found');
-        }
-
-        // Store characteristics in device object
         device.characteristics = new Map();
-        characteristics.forEach(char => {
-          console.log(`Storing characteristic: ${char.uuid}`);
-          device.characteristics.set(char.uuid, char);
-        });
 
-        // Try to read battery and serial right after connection
-        try {
-          const batteryChar = device.characteristics.get(CHARACTERISTICS.BATTERY_LEVEL);
-          if (batteryChar) {
-            console.log('Found battery characteristic, attempting to read...');
-            const batteryValue = await batteryChar.readAsync();
-            console.log('Raw battery value:', batteryValue);
-            device.info.batteryLevel = batteryValue[0];
-            console.log('Parsed battery level:', device.info.batteryLevel);
-          } else {
-            console.log('Battery characteristic not found');
+        // Process each service
+        for (const service of services) {
+          console.log('Processing service:', service.uuid);
+          // Discover all characteristics for each service
+          const characteristics = await service.discoverCharacteristicsAsync();
+          
+          for (const characteristic of characteristics) {
+            console.log('Found characteristic:', characteristic.uuid);
+            
+            // Store all characteristics
+            device.characteristics.set(characteristic.uuid, characteristic);
+
+            try {
+              switch(characteristic.uuid) {
+                case CHARACTERISTICS.SENSOR:
+                case CHARACTERISTICS.BUTTON_STATUS:
+                  console.log('Setting up notifications for:', characteristic.uuid);
+                  await characteristic.subscribeAsync();
+                  characteristic.on('data', (data) => {
+                    this.handleCharacteristicData(deviceId, characteristic.uuid, data);
+                  });
+                  break;
+
+                case DEVICE_SERIAL_NUMBER:
+                  console.log('Reading serial number');
+                  const serialData = await characteristic.readAsync();
+                  device.info.serialNumber = serialData.toString().trim();
+                  console.log('Serial Number:', device.info.serialNumber);
+                  break;
+
+                case DEVICE_FIRMWARE_VERSION:
+                  console.log('Reading firmware version');
+                  const fwData = await characteristic.readAsync();
+                  device.info.firmwareVersion = fwData.toString().trim();
+                  console.log('Firmware Version:', device.info.firmwareVersion);
+                  break;
+
+                case DEVICE_HARDWARE_VERSION:
+                  console.log('Reading hardware version');
+                  const hwData = await characteristic.readAsync();
+                  device.info.hardwareVersion = hwData.toString().trim();
+                  console.log('Hardware Version:', device.info.hardwareVersion);
+                  break;
+
+                case DEVICE_BATTERY_LEVEL:
+                  console.log('Reading battery level');
+                  const batteryData = await characteristic.readAsync();
+                  device.info.batteryLevel = batteryData[0];
+                  console.log('Battery Level:', device.info.batteryLevel);
+                  
+                  // Set up battery notifications if supported
+                  await characteristic.subscribeAsync();
+                  characteristic.on('data', (data) => {
+                    device.info.batteryLevel = data[0];
+                    console.log('Battery Level Updated:', device.info.batteryLevel);
+                    this.emit('deviceUpdated', this.getAllDevices());
+                  });
+                  break;
+              }
+            } catch (error) {
+              console.error(`Error handling characteristic ${characteristic.uuid}:`, error);
+            }
           }
-        } catch (error) {
-          console.error('Error reading battery:', error);
         }
 
-        // Try to read serial number if available
-        try {
-          const serialChar = device.characteristics.get(CHARACTERISTICS.SERIAL_NUMBER);
-          if (serialChar) {
-            console.log('Found serial characteristic, attempting to read...');
-            const serialValue = await serialChar.readAsync();
-            console.log('Raw serial value:', serialValue);
-            device.info.serialNumber = serialValue.toString();
-            console.log('Parsed serial number:', device.info.serialNumber);
-          } else {
-            console.log('Serial characteristic not found');
-          }
-        } catch (error) {
-          console.error('Error reading serial:', error);
-        }
-
-        // Emit connected event with device info
         this.emit('deviceConnected', {
           id: deviceId,
           name: device.info.name,
           connected: true,
           batteryLevel: device.info.batteryLevel,
-          serialNumber: device.info.serialNumber
+          serialNumber: device.info.serialNumber,
+          firmwareVersion: device.info.firmwareVersion,
+          hardwareVersion: device.info.hardwareVersion
         });
 
         return true;
@@ -258,6 +269,48 @@ class BLEServer extends EventEmitter {
       }
     }
     return false;
+  }
+
+  handleCharacteristicData(deviceId, characteristicUuid, data) {
+    const device = this.discoveredDevices.get(deviceId);
+    if (!device) return;
+
+    switch(characteristicUuid) {
+      case CHARACTERISTICS.SENSOR:
+        device.info.sensorValue = data[0];
+        break;
+
+      case DEVICE_SERIAL_NUMBER:
+        device.info.serialNumber = data.toString().trim();
+        console.log('Serial Number:', device.info.serialNumber);
+        break;
+
+      case DEVICE_FIRMWARE_VERSION:
+        device.info.firmwareVersion = data.toString().trim();
+        console.log('Firmware Version:', device.info.firmwareVersion);
+        break;
+
+      case DEVICE_HARDWARE_VERSION:
+        device.info.hardwareVersion = data.toString().trim();
+        console.log('Hardware Version:', device.info.hardwareVersion);
+        break;
+
+      case DEVICE_BATTERY_LEVEL:
+        device.info.batteryLevel = data[0];
+        console.log('Battery Level:', device.info.batteryLevel);
+        break;
+
+      case CHARACTERISTICS.BUTTON_STATUS:
+        const buttonValue = data[0];
+        if (buttonValue === 0) {
+          this.emit('buttonPressed', { deviceId, value: buttonValue });
+        } else {
+          this.emit('buttonReleased', { deviceId });
+        }
+        break;
+    }
+
+    this.emit('deviceUpdated', this.getAllDevices());
   }
 
   async writeCharacteristic(deviceId, characteristicUUID, value) {
