@@ -1,214 +1,63 @@
 // WebSocket server implementation for handling client connections
 const WebSocket = require('ws');
 
-class WSServer {
-  constructor(bleServer) {
-    this.server = null;
-    this.clients = new Set();
-    this.bleServer = bleServer;
-    
-    // Listen to BLE events
-    this.setupBLEListeners();
-  }
-
-  setupBLEListeners() {
-    // Generic event handler
-    this.bleServer.on('event', (event) => {
-      this.broadcast({
-        type: 'event',
-        event
-      });
-    });
-
-    // Specific event handlers
-    this.bleServer.on('deviceDiscovered', (device) => {
-      this.broadcast({
-        type: 'deviceFound',
-        device
-      });
-    });
-
-    this.bleServer.on('deviceConnected', (device) => {
-      this.broadcast({
-        type: 'deviceConnected',
-        device
-      });
-    });
-
-    this.bleServer.on('deviceDisconnected', (device) => {
-      console.log('Broadcasting device disconnected:', device);
-      this.broadcast({
-        type: 'deviceDisconnected',
-        device
-      });
-    });
-
-    this.bleServer.on('characteristicChanged', (data) => {
-      this.broadcast({
-        type: 'characteristicChanged',
-        ...data
-      });
-    });
-
-    this.bleServer.on('deviceUpdated', (data) => {
-      // Send devices list update
-      this.broadcast({
-        type: 'devicesList',
-        devices: data.devices
-      });
-
-      // Send device info update
-      if (data.deviceInfo) {
-        Object.entries(data.deviceInfo).forEach(([deviceId, info]) => {
-          this.broadcast({
-            type: 'deviceInfo',
-            deviceId,
-            ...info
-          });
+class WebSocketServer {
+    constructor(server) {
+        this.wss = new WebSocket.Server({ 
+            server,
+            // Add ping-pong heartbeat
+            clientTracking: true,
+            pingInterval: 30000,
+            pingTimeout: 5000
         });
-      }
-    });
 
-    this.bleServer.on('buttonEvent', (data) => {
-      // console.log('🟣 WS Server - Forwarding Button Event:', data);
-      this.broadcast({
-        type: 'buttonEvent',
-        ...data
-      });
-    });
-  }
-
-  start(port = 8080) {
-    this.server = new WebSocket.Server({ port });
-    
-    this.server.on('connection', (ws) => {
-      this.clients.add(ws);
-      
-      ws.on('message', async (message) => {
-        try {
-          const data = JSON.parse(message);
-          await this.handleMessage(ws, data);
-        } catch (error) {
-          console.error('Failed to handle message:', error);
-        }
-      });
-
-      ws.on('close', () => {
-        this.clients.delete(ws);
-      });
-    });
-  }
-
-  async handleMessage(ws, message) {
-    switch(message.type) {
-      case 'scan':
-        this.bleServer.startScanning();
-        break;
-      
-      case 'getDevices':
-        const devices = this.bleServer.getAllDevices();
-        ws.send(JSON.stringify({
-          type: 'devicesList',
-          devices
-        }));
-        break;
-      
-      case 'connect':
-        const success = await this.bleServer.connectToDevice(message.deviceId);
-        ws.send(JSON.stringify({
-          type: 'connectResult',
-          deviceId: message.deviceId,
-          success
-        }));
-        break;
-      
-      case 'write':
-        const writeSuccess = await this.bleServer.writeCharacteristic(
-          message.deviceId,
-          message.characteristicUUID,
-          message.value
-        );
-        ws.send(JSON.stringify({
-          type: 'writeResult',
-          deviceId: message.deviceId,
-          success: writeSuccess
-        }));
-        break;
-      
-      case 'sendEvent':
-        const eventSuccess = await this.bleServer.sendEventToDevice(
-          message.deviceId,
-          message.eventType,
-          message.data
-        );
-        ws.send(JSON.stringify({
-          type: 'eventResult',
-          success: eventSuccess,
-          originalEvent: message
-        }));
-        break;
-
-      case 'setColor':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const eventSuccess = await this.bleServer.sendEventToDevice(
-            message.deviceId,
-            'setColor',
-            message.data
-          );
-          ws.send(JSON.stringify({
-            type: 'eventResult',
-            success: eventSuccess,
-            originalEvent: message
-          }));
-        }
-        break;
-
-      case 'setLuminosity':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const eventSuccess = await this.bleServer.sendEventToDevice(
-            message.deviceId,
-            'setLuminosity',
-            message.data
-          );
-          ws.send(JSON.stringify({
-            type: 'eventResult',
-            success: eventSuccess,
-            originalEvent: message
-          }));
-        }
-        break;
-
-      case 'updateBatteryLevels':
-        const connectedDevices = this.bleServer.getAllDevices()
-          .filter(device => device.connected);
-        
-        for (const device of connectedDevices) {
-          await this.bleServer.readBatteryLevel(device.id);
-        }
-        
-        // Send updated devices list after battery update
-        ws.send(JSON.stringify({
-          type: 'devicesList',
-          devices: this.bleServer.getAllDevices()
-        }));
-        break;
+        this.setupWebSocketServer();
     }
-  }
 
-  broadcast(message) {
-    const data = JSON.stringify(message);
-    this.clients.forEach(client => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(data);
-      }
-    });
-  }
+    setupWebSocketServer() {
+        this.wss.on('connection', (ws) => {
+            console.log('Client connected to WebSocket');
 
-  stop() {
-    if (this.server) {
-      this.server.close();
+            // Setup heartbeat
+            ws.isAlive = true;
+            ws.on('pong', () => {
+                ws.isAlive = true;
+            });
+
+            ws.on('error', (error) => {
+                console.error('WebSocket client error:', error);
+            });
+
+            ws.on('close', () => {
+                console.log('Client disconnected from WebSocket');
+            });
+        });
+
+        // Implement heartbeat check
+        const interval = setInterval(() => {
+            this.wss.clients.forEach((ws) => {
+                if (ws.isAlive === false) {
+                    console.log('Terminating inactive client');
+                    return ws.terminate();
+                }
+                
+                ws.isAlive = false;
+                ws.ping(() => {});
+            });
+        }, 30000);
+
+        this.wss.on('close', () => {
+            clearInterval(interval);
+        });
     }
-  }
+
+    broadcast(data) {
+        this.wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(data));
+            }
+        });
+    }
 }
 
-module.exports = { WSServer };
+module.exports = { WebSocketServer };

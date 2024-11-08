@@ -1,207 +1,139 @@
 // Renderer process code
 const { ipcRenderer } = require('electron');
 
-document.addEventListener('DOMContentLoaded', () => {
-  const autoLaunchCheckbox = document.getElementById('autoLaunch');
-  const hideWindowButton = document.getElementById('hideWindow');
-  const devicesList = document.getElementById('devicesList');
+// Add WebSocket connection handling with automatic reconnection
+function setupWebSocket() {
+    const ws = new WebSocket('ws://localhost:8080');
+    
+    ws.onopen = () => {
+        console.log('WebSocket Connected');
+        // Request initial device list
+        ws.send(JSON.stringify({ type: 'getDevices' }));
+    };
 
-  // Setup auto-launch checkbox
-  autoLaunchCheckbox.addEventListener('change', (e) => {
-    ipcRenderer.send('toggle-auto-launch', e.target.checked);
-  });
+    ws.onclose = () => {
+        console.log('WebSocket Disconnected - Attempting to reconnect...');
+        // Wait for 2 seconds before attempting to reconnect
+        setTimeout(setupWebSocket, 2000);
+    };
 
-  // Setup hide window button
-  hideWindowButton.addEventListener('click', () => {
-    ipcRenderer.send('hide-window');
-  });
+    ws.onerror = (error) => {
+        console.error('WebSocket Error:', error);
+    };
 
-  // Handle device updates
-  function updateDevicesList(devices) {
-    console.log('Updating devices list:', devices);
+    ws.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            console.log('Received message:', data);
+
+            switch(data.type) {
+                case 'deviceList':
+                    updateDeviceList(data.devices);
+                    break;
+                case 'deviceDiscovered':
+                    handleDeviceDiscovered(data.device);
+                    break;
+                case 'deviceConnected':
+                    handleDeviceConnected(data.device);
+                    break;
+                case 'deviceDisconnected':
+                    handleDeviceDisconnected(data.device);
+                    break;
+                case 'deviceUpdated':
+                    handleDeviceUpdated(data);
+                    break;
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
+        }
+    };
+
+    return ws;
+}
+
+// UI update functions
+function updateDeviceList(devices) {
+    console.log('Updating device list:', devices);
+    const devicesList = document.getElementById('devicesList');
+    if (!devicesList) {
+        console.error('devicesList element not found');
+        return;
+    }
+
+    if (!devices || devices.length === 0) {
+        devicesList.innerHTML = '<div class="no-devices">No devices connected</div>';
+        return;
+    }
+
     devicesList.innerHTML = devices.map(device => `
-      <div class="device-item" data-device-id="${device.id}">
-        <div class="device-info-container">
-          <span class="status-indicator ${device.connected ? 'connected' : ''}">${device.connected ? '🟢' : '⚪️'}</span>
-          ${device.serialNumber ? `<span class="device-info">Serial: ${device.serialNumber}</span>` : ''}
-          ${device.batteryLevel !== null ? `<span class="device-info">Battery: ${device.batteryLevel}%</span>` : ''}
+        <div class="device-item ${device.connected ? 'connected' : ''}" data-id="${device.id}">
+            <div class="device-header">
+                <span class="device-name">${device.name || 'Unknown Device'}</span>
+                <span class="connection-status ${device.connected ? 'connected' : 'disconnected'}">
+                    ${device.connected ? '🟢 Connected' : '⚪ Disconnected'}
+                </span>
+            </div>
+            <div class="device-details">
+                <div class="device-info">
+                    <div>ID: ${device.id}</div>
+                    ${device.serialNumber ? `<div>Serial: ${device.serialNumber}</div>` : ''}
+                    ${device.batteryLevel ? `<div>Battery: ${device.batteryLevel}%</div>` : ''}
+                </div>
+            </div>
         </div>
-        <div class="device-controls">
-          ${!device.connected ? `
-            <button class="button" onclick="connectDevice('${device.id}')">Connect</button>
-          ` : `
-            <button class="button" onclick="setRandomLuminosity('${device.id}')">Random Brightness</button>
-            <button class="button" onclick="setRandomColor('${device.id}')">Random Color</button>
-          `}
-        </div>
-      </div>
     `).join('');
-  }
+}
 
-  // Setup WebSocket connection to receive device updates
-  const ws = new WebSocket('ws://localhost:8080');
-  
-  ws.onopen = () => {
-    console.log('WebSocket connected');
-    // Request initial device list
-    ws.send(JSON.stringify({ type: 'getDevices' }));
-    // Start scanning
-    ws.send(JSON.stringify({ type: 'scan' }));
-    // Start battery updates
-    startBatteryUpdates();
-  };
-  
-  ws.onmessage = (event) => {
-    const message = JSON.parse(event.data);
-    console.log('Received message:', message);
-    
-    switch(message.type) {
-      case 'deviceDisconnected':
-        console.log('Device disconnected:', message.device);
-        // Remove the device from the UI
-        const deviceElement = document.querySelector(`[data-device-id="${message.device.id}"]`);
-        if (deviceElement) {
-          deviceElement.remove();
-        }
-        // Update the list after removal
+function handleDeviceDiscovered(device) {
+    console.log('Device discovered:', device);
+    // Request updated device list
+    if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'getDevices' }));
-        break;
+    }
+}
 
-      case 'event':
-        // Handle generic events
-        handleDeviceEvent(message.event);
-        break;
-
-      case 'deviceFound':
-      case 'deviceConnected':
-        // Request updated device list
+function handleDeviceConnected(device) {
+    console.log('Device connected:', device);
+    // Request updated device list
+    if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'getDevices' }));
-        break;
-      
-      case 'devicesList':
-        updateDevicesList(message.devices);
-        break;
-        
-      case 'characteristicChanged':
-        console.log('Characteristic changed:', message);
-        break;
-
-      case 'eventResult':
-        console.log(
-          message.success ? 
-          'Command sent successfully' : 
-          'Failed to send command'
-        );
-        break;
-
-      case 'setColor':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const [r, g, b] = message.data;
-          ws.send(JSON.stringify({
-            type: 'sendEvent',
-            deviceId: message.deviceId,
-            eventType: 'setColor',
-            data: [r, g, b]
-          }));
-        }
-        break;
-
-      case 'setLuminosity':
-        if (message.deviceId && Array.isArray(message.data)) {
-          const [intensity] = message.data;
-          console.log(`External call: Setting luminosity to ${intensity}% for device ${message.deviceId}`);
-          ws.send(JSON.stringify({
-            type: 'sendEvent',
-            deviceId: message.deviceId,
-            eventType: 'setLuminosity',
-            data: [intensity, 1] // [intensity, delay]
-          }));
-        }
-        break;
-
-      case 'buttonEvent':
-        setDeviceValues(prev => ({
-          ...prev,
-          [message.deviceId]: {
-            ...prev[message.deviceId],
-            buttonState: message.state,
-            forceValue: message.force
-          }
-        }));
-        break;
     }
-  };
+}
 
-  // Periodically request device updates
-  setInterval(() => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'getDevices' }));
+function handleDeviceDisconnected(device) {
+    console.log('Device disconnected:', device);
+    // Request updated device list
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'getDevices' }));
     }
-  }, 5000);
+}
 
-  // Connect to device
-  window.connectDevice = (deviceId) => {
-    ws.send(JSON.stringify({
-      type: 'connect',
-      deviceId
-    }));
-  };
-
-  function handleDeviceEvent(event) {
-    console.log('Received device event:', event);
-    // Handle different event types
-    switch(event.type) {
-      case 'characteristicChanged':
-        // Handle characteristic changes
-        break;
-      // Add other event type handlers
+function handleDeviceUpdated(updateData) {
+    console.log('Device updated:', updateData);
+    if (updateData.devices) {
+        updateDeviceList(updateData.devices);
     }
-  }
+}
 
-  // Function to send events to device
-  function sendEventToDevice(deviceId, eventType, data) {
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType,
-      data
-    }));
-  }
+// Initialize WebSocket connection and UI handlers
+let ws;
+document.addEventListener('DOMContentLoaded', () => {
+    // Initialize WebSocket
+    ws = setupWebSocket();
 
-  // Add command functions
-  window.setRandomLuminosity = (deviceId) => {
-    const luminosity = Math.floor(Math.random() * 60) + 5; // 5-64%
-    console.log(`Setting luminosity to ${luminosity}% for device ${deviceId}`);
-    
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType: 'setLuminosity',
-      data: [luminosity, 1] // [intensity, delay]
-    }));
-  };
+    // Setup auto-launch checkbox handler
+    const autoLaunchCheckbox = document.getElementById('autoLaunch');
+    if (autoLaunchCheckbox) {
+        autoLaunchCheckbox.addEventListener('change', (e) => {
+            ipcRenderer.send('toggle-auto-launch', e.target.checked);
+        });
+    }
 
-  window.setRandomColor = (deviceId) => {
-    // Use values between 0-4 to match the example code
-    const r = Math.floor(Math.random() * 5); // 0-4
-    const g = Math.floor(Math.random() * 5); // 0-4
-    const b = Math.floor(Math.random() * 5); // 0-4
-    console.log(`Setting color to RGB(${r},${g},${b}) for device ${deviceId}`);
-    
-    ws.send(JSON.stringify({
-      type: 'sendEvent',
-      deviceId,
-      eventType: 'setColor',
-      data: [r, g, b] // The mode (1) is added in the server
-    }));
-  };
-
-  // Add periodic battery level updates for connected devices
-  function startBatteryUpdates() {
-    setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'updateBatteryLevels' }));
-      }
-    }, 30000); // Update every 30 seconds
-  }
+    // Setup hide window button handler
+    const hideButton = document.getElementById('hideWindow');
+    if (hideButton) {
+        hideButton.addEventListener('click', () => {
+            ipcRenderer.send('hide-window');
+        });
+    }
 });
