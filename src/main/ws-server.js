@@ -150,6 +150,21 @@ class WSServer {
           }));
         }
         break;
+
+      case 'updateBatteryLevels':
+        const connectedDevices = this.bleServer.getAllDevices()
+          .filter(device => device.connected);
+        
+        for (const device of connectedDevices) {
+          await this.bleServer.readBatteryLevel(device.id);
+        }
+        
+        // Send updated devices list after battery update
+        ws.send(JSON.stringify({
+          type: 'devicesList',
+          devices: this.bleServer.getAllDevices()
+        }));
+        break;
     }
   }
 

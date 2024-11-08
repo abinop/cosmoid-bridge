@@ -23,6 +23,11 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="device-item" data-device-id="${device.id}">
         <h3>${device.name}</h3>
         <p>ID: ${device.id}</p>
+        <p>Serial: ${device.serialNumber || 'Unknown'}</p>
+        ${device.batteryLevel !== null ? 
+          `<p>Battery: ${device.batteryLevel}%</p>` : 
+          '<p>Battery: N/A</p>'
+        }
         <p>Status: ${device.connected ? '🟢 Connected' : '⚪️ Discovered'}</p>
         ${!device.connected ? `
           <button class="button" onclick="connectDevice('${device.id}')">
@@ -51,6 +56,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ws.send(JSON.stringify({ type: 'getDevices' }));
     // Start scanning
     ws.send(JSON.stringify({ type: 'scan' }));
+    // Start battery updates
+    startBatteryUpdates();
   };
   
   ws.onmessage = (event) => {
@@ -186,4 +193,13 @@ document.addEventListener('DOMContentLoaded', () => {
       data: [r, g, b] // The mode (1) is added in the server
     }));
   };
+
+  // Add periodic battery level updates for connected devices
+  function startBatteryUpdates() {
+    setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'updateBatteryLevels' }));
+      }
+    }, 30000); // Update every 30 seconds
+  }
 });

@@ -39,13 +39,16 @@ class WindowsBLEAdapter extends EventEmitter {
     this.scanning = true;
 
     try {
-      // Use PowerShell to scan for BLE devices
+      // Enhanced PowerShell command to get more device information
       const command = `
         $btRadio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
         if ($btRadio) {
           $devices = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth" -and $_.Status -eq "OK"}
           $devices | ForEach-Object {
-            Write-Output "$($_.FriendlyName)|$($_.DeviceID)"
+            $device = $_
+            $serial = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "DEVPKEY_Device_SerialNumber" -ErrorAction SilentlyContinue).Data
+            $battery = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2" -ErrorAction SilentlyContinue).Data
+            Write-Output "$($device.FriendlyName)|$($device.DeviceID)|$serial|$battery"
           }
         }
       `;
@@ -54,12 +57,14 @@ class WindowsBLEAdapter extends EventEmitter {
       
       scanResult.split('\n').forEach(line => {
         if (line.trim()) {
-          const [name, id] = line.split('|');
+          const [name, id, serial, battery] = line.split('|');
           const deviceInfo = {
             id: id.trim(),
             name: name.trim(),
             address: id.trim(),
             rssi: -50, // Default RSSI value
+            serialNumber: serial?.trim() || 'Unknown',
+            batteryLevel: battery ? parseInt(battery.trim()) : null,
             advertisement: {
               localName: name.trim(),
               serviceUuids: []
@@ -112,6 +117,35 @@ class WindowsBLEAdapter extends EventEmitter {
       throw error;
     } finally {
       this.connectionAttempts.delete(deviceId);
+    }
+  }
+
+  // Add method to read battery level
+  async readBatteryLevel(deviceId) {
+    try {
+      const command = `
+        $device = Get-PnpDevice -InstanceId "${deviceId}"
+        if ($device) {
+          $battery = (Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2").Data
+          Write-Output $battery
+        }
+      `;
+      
+      const result = execSync(`powershell.exe "${command}"`).toString().trim();
+      const batteryLevel = parseInt(result);
+      
+      if (!isNaN(batteryLevel)) {
+        const device = this.devices.get(deviceId);
+        if (device) {
+          device.batteryLevel = batteryLevel;
+          this.emit('deviceUpdated', device);
+        }
+        return batteryLevel;
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to read battery level:', error);
+      return null;
     }
   }
 }

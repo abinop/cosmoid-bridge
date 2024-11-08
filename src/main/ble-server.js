@@ -7,7 +7,8 @@ const SERVICE_UUID = '000015231212efde1523785feabcd123';
 const CHARACTERISTICS = {
   SENSOR: '000015241212efde1523785feabcd123',
   BUTTON_STATUS: '000015251212efde1523785feabcd123',
-  COMMAND: '000015281212efde1523785feabcd123'
+  COMMAND: '000015281212efde1523785feabcd123',
+  BATTERY_LEVEL: '000015291212efde1523785feabcd123'
 };
 
 // Command definitions
@@ -130,9 +131,37 @@ class BLEServer extends EventEmitter {
     }
   }
 
-  // Add method to get all discovered devices
+  // Add method to get all devices
   getAllDevices() {
-    return Array.from(this.discoveredDevices.values()).map(d => d.info);
+    // Convert the Map values to an array
+    return Array.from(this.discoveredDevices.values()).map(device => ({
+      id: device.info.id,
+      name: device.info.name,
+      connected: this.connectedDevices.has(device.info.id),
+      serialNumber: device.info.serialNumber || 'Unknown',
+      batteryLevel: device.info.batteryLevel || null
+    }));
+  }
+
+  // Add method to read battery level
+  async readBatteryLevel(deviceId) {
+    const device = this.discoveredDevices.get(deviceId);
+    if (!device) return null;
+
+    try {
+      // Try to read battery characteristic if it exists
+      const batteryChar = device.characteristics?.get('BATTERY_LEVEL');
+      if (batteryChar) {
+        const value = await batteryChar.readAsync();
+        device.info.batteryLevel = value[0];
+        this.emit('deviceUpdated', this.getAllDevices());
+        return value[0];
+      }
+      return null;
+    } catch (error) {
+      console.error('Failed to read battery level:', error);
+      return null;
+    }
   }
 
   async connectToDevice(deviceId) {
@@ -144,76 +173,91 @@ class BLEServer extends EventEmitter {
         await device.peripheral.connectAsync();
         console.log('Connected successfully to:', device.info.name);
 
+        // Store in connected devices
+        this.connectedDevices.set(deviceId, device);
+
         console.log('Discovering services and characteristics...');
         
-        // Format the service UUID correctly
-        console.log('Using service UUID:', SERVICE_UUID);
-
         // First discover services
         const services = await device.peripheral.discoverServicesAsync([SERVICE_UUID]);
-        // console.log('Discovered services:', services);
+        console.log('Discovered services:', services.map(s => s.uuid));
 
         if (!services || services.length === 0) {
           throw new Error('No matching services found');
         }
 
-        // Then discover characteristics for the first matching service
+        // Then discover characteristics
         const service = services[0];
         const characteristicUUIDs = [
           CHARACTERISTICS.SENSOR,
           CHARACTERISTICS.BUTTON_STATUS,
-          CHARACTERISTICS.COMMAND
+          CHARACTERISTICS.COMMAND,
+          CHARACTERISTICS.BATTERY_LEVEL
         ];
         
-        // console.log('Looking for characteristics:', characteristicUUIDs);
-        
-        // Discover characteristics
+        console.log('Looking for characteristics:', characteristicUUIDs);
         const characteristics = await service.discoverCharacteristicsAsync(characteristicUUIDs);
-        // console.log('Found characteristics:', characteristics);
+        console.log('Found characteristics:', characteristics.map(c => c.uuid));
         
         if (!characteristics || characteristics.length === 0) {
           throw new Error('No characteristics found');
         }
 
-        // Store characteristics in both device objects
-        device.characteristics = characteristics;
-        if (this.connectedDevices.has(deviceId)) {
-          this.connectedDevices.get(deviceId).characteristics = characteristics;
-        }
-        
-        // Setup notifications for each characteristic
-        for (const char of characteristics) {
-          try {
-            console.log('Setting up notifications for characteristic:', char.uuid);
-            await char.subscribeAsync();
-            char.on('data', (data) => {
-              // console.log('Received data from characteristic:', char.uuid, data);
-              this.emit('characteristicChanged', {
-                deviceId,
-                characteristicUUID: char.uuid,
-                value: Array.from(data)
-              });
-            });
-          } catch (notifyError) {
-            console.warn('Failed to setup notifications for characteristic:', char.uuid, notifyError);
+        // Store characteristics in device object
+        device.characteristics = new Map();
+        characteristics.forEach(char => {
+          console.log(`Storing characteristic: ${char.uuid}`);
+          device.characteristics.set(char.uuid, char);
+        });
+
+        // Try to read battery and serial right after connection
+        try {
+          const batteryChar = device.characteristics.get(CHARACTERISTICS.BATTERY_LEVEL);
+          if (batteryChar) {
+            console.log('Found battery characteristic, attempting to read...');
+            const batteryValue = await batteryChar.readAsync();
+            console.log('Raw battery value:', batteryValue);
+            device.info.batteryLevel = batteryValue[0];
+            console.log('Parsed battery level:', device.info.batteryLevel);
+          } else {
+            console.log('Battery characteristic not found');
           }
+        } catch (error) {
+          console.error('Error reading battery:', error);
         }
 
-        // Update connection status
-        device.info.connected = true;
-        this.connectedDevices.set(deviceId, device);
-        this.emit('deviceConnected', device.info);
-        
+        // Try to read serial number if available
+        try {
+          const serialChar = device.characteristics.get(CHARACTERISTICS.SERIAL_NUMBER);
+          if (serialChar) {
+            console.log('Found serial characteristic, attempting to read...');
+            const serialValue = await serialChar.readAsync();
+            console.log('Raw serial value:', serialValue);
+            device.info.serialNumber = serialValue.toString();
+            console.log('Parsed serial number:', device.info.serialNumber);
+          } else {
+            console.log('Serial characteristic not found');
+          }
+        } catch (error) {
+          console.error('Error reading serial:', error);
+        }
+
+        // Emit connected event with device info
+        this.emit('deviceConnected', {
+          id: deviceId,
+          name: device.info.name,
+          connected: true,
+          batteryLevel: device.info.batteryLevel,
+          serialNumber: device.info.serialNumber
+        });
+
         return true;
       } catch (error) {
         console.error('Failed to connect:', error);
-        this.handleDeviceDisconnect(deviceId);
         return false;
       }
-    } else {
-      console.error('Device not found:', deviceId);
-      return false;
     }
+    return false;
   }
 
   async writeCharacteristic(deviceId, characteristicUUID, value) {
@@ -233,20 +277,25 @@ class BLEServer extends EventEmitter {
   // Add method to send events to device
   async sendEventToDevice(deviceId, eventType, data) {
     const device = this.connectedDevices.get(deviceId);
-    if (!device || !device.characteristics) {
-      console.error('Device not found or no characteristics available:', deviceId);
+    if (!device) {
+      console.error('Device not found:', deviceId);
+      return false;
+    }
+    
+    if (!device.characteristics) {
+      console.error('No characteristics available for device:', deviceId);
       return false;
     }
 
     try {
-      // Find command characteristic by direct array access since we know it's the third one
-      const commandChar = device.characteristics[2];
+      // Get command characteristic by UUID
+      const commandChar = device.characteristics.get(CHARACTERISTICS.COMMAND);
+      console.log('Command characteristic:', commandChar?.uuid);
       
-      // Verify it's the correct characteristic (without hyphens)
-      if (commandChar.uuid !== CHARACTERISTICS.COMMAND) {
-        console.error('Unexpected characteristic UUID:', commandChar.uuid);
-        console.error('Expected:', CHARACTERISTICS.COMMAND);
-        throw new Error('Command characteristic mismatch');
+      if (!commandChar) {
+        console.error('Command characteristic not found');
+        console.log('Available characteristics:', Array.from(device.characteristics.keys()));
+        return false;
       }
 
       let command;

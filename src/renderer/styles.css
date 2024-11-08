@@ -127,3 +127,29 @@ input[type="checkbox"] {
 .button:active {
     background-color: #1565c0;
 }
+
+.device-item p {
+    margin: 5px 0;
+}
+
+.battery-indicator {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+.battery-high {
+    background-color: #4caf50;
+    color: white;
+}
+
+.battery-medium {
+    background-color: #ff9800;
+    color: white;
+}
+
+.battery-low {
+    background-color: #f44336;
+    color: white;
+}
