@@ -21,98 +21,142 @@ function normalizeUUID(uuid) {
 class BLEServer extends EventEmitter {
   constructor() {
     super();
+    this.isScanning = false;
+    this.seenDevices = new Set(); // Track devices we've already logged
     console.log('🔍 BLE Characteristics we are looking for:', {
       SENSOR: BLE_CHARACTERISTICS.SENSOR,
       BUTTON_STATUS: BLE_CHARACTERISTICS.BUTTON_STATUS,
       BATTERY_LEVEL: BLE_CHARACTERISTICS.BATTERY_LEVEL,
       SERVICE: BLE_SERVICE_UUID
     });
-    this.discoveredDevices = new Map(); // Track all discovered devices
+    this.discoveredDevices = new Map();
     this.connectedDevices = new Map();
     this.setupNoble();
   }
 
   setupNoble() {
     noble.on('stateChange', (state) => {
-      console.log('Bluetooth state:', state);
-      if (state === 'poweredOn') {
-        this.startScanning();
-      } else {
-        console.log('Bluetooth state is not powered on:', state);
-        // If Bluetooth is turned off, clear all devices
-        this.discoveredDevices.clear();
-        this.connectedDevices.clear();
+      console.log('Detailed Bluetooth state change:', state);
+      if (state === 'poweredOn' && !this.isScanning) {
+        this.startScanningWithRetry();
       }
     });
 
     noble.on('discover', (peripheral) => {
+      const deviceKey = `${peripheral.id}-${peripheral.advertisement.localName}`;
+      
+      // Only log if we haven't seen this device before
+      if (!this.seenDevices.has(deviceKey)) {
+        this.seenDevices.add(deviceKey);
+        console.log('\nNew Device Found:', {
+          name: peripheral.advertisement.localName,
+          id: peripheral.id,
+          serviceUUIDs: peripheral.advertisement.serviceUuids
+        });
+      }
+      
       this.handleDiscoveredDevice(peripheral);
     });
 
-    // Add scanning started event handler
     noble.on('scanStart', () => {
-      console.log('Scanning started for Cosmo devices...');
+      this.isScanning = true;
+      console.log('Scan started...');
     });
 
-    // Add scanning stopped event handler
     noble.on('scanStop', () => {
-      console.log('Scanning stopped...');
+      this.isScanning = false;
+      console.log('Scan stopped...');
     });
 
-    // Add state change handler for device disconnection
-    noble.on('disconnect', (peripheral) => {
-      console.log('Device disconnected:', peripheral.id);
-      this.handleDeviceDisconnect(peripheral.id);
+    noble.on('error', (error) => {
+      console.error('Noble error:', error);
     });
   }
 
-  startScanning() {
-    console.log('Starting BLE scan for Cosmo devices...');
-    // First stop any existing scan
-    noble.stopScanning(() => {
-      // Start scanning only for Cosmo service UUID
-      noble.startScanning([BLE_SERVICE_UUID], true, (error) => {
-        if (error) {
-          console.error('Failed to start scanning:', error);
-        }
-      });
-    });
+  startScanningWithRetry() {
+    if (this.isScanning) {
+      return; // Skip if already scanning
+    }
+
+    console.log('Starting new scan cycle...');
+    
+    if (this.scanInterval) {
+      clearInterval(this.scanInterval);
+    }
+    
+    const startScanCycle = () => {
+      if (!this.isScanning && this.connectedDevices.size === 0) {
+        noble.startScanning([], true);
+      }
+    };
+
+    startScanCycle();
+    this.scanInterval = setInterval(startScanCycle, 5000);
   }
 
   handleDiscoveredDevice(peripheral) {
-    // Only handle if not already discovered
-    if (!this.discoveredDevices.has(peripheral.id)) {
-      console.log('Discovered Cosmo device:', peripheral.advertisement.localName || 'Unknown', peripheral.id);
-      
-      const deviceInfo = {
-        id: peripheral.id,
-        name: peripheral.advertisement.localName || 'Unknown Device',
-        connected: false
-      };
+    const isCosmoDevice = 
+        peripheral.advertisement.localName?.includes('Cosmo') ||
+        peripheral.advertisement.localName?.includes('COSMO') ||
+        (peripheral.advertisement.serviceUuids && 
+         peripheral.advertisement.serviceUuids.some(uuid => 
+           uuid.toLowerCase().replace(/[^a-f0-9]/g, '') === 
+           BLE_SERVICE_UUID.toLowerCase().replace(/[^a-f0-9]/g, '')
+         ));
 
-      this.discoveredDevices.set(peripheral.id, { peripheral, info: deviceInfo });
-      
-      // Set max listeners to prevent memory leak warning
-      peripheral.setMaxListeners(2);
-      
-      peripheral.on('connect', () => {
-        deviceInfo.connected = true;
-        this.connectedDevices.set(peripheral.id, { peripheral, info: deviceInfo });
-        this.emit('deviceConnected', deviceInfo);
-      });
+    if (isCosmoDevice && !this.discoveredDevices.has(peripheral.id)) {
+        console.log('\n🎯 COSMO DEVICE FOUND!');
+        console.log('Name:', peripheral.advertisement.localName);
+        console.log('ID:', peripheral.id);
+        console.log('Service UUIDs:', peripheral.advertisement.serviceUuids);
+        console.log('====================\n');
 
-      peripheral.on('disconnect', () => {
-        console.log('Device disconnected:', deviceInfo.name);
-        this.handleDeviceDisconnect(peripheral.id);
-      });
+        const deviceInfo = {
+            id: peripheral.id,
+            name: peripheral.advertisement.localName || 'Unknown Device',
+            connected: false,
+            rssi: peripheral.rssi,
+            serviceUuids: peripheral.advertisement.serviceUuids || []
+        };
 
-      // Emit device discovered event
-      this.emit('deviceDiscovered', deviceInfo);
-    } else {
-      // Update RSSI for existing device
-      const device = this.discoveredDevices.get(peripheral.id);
-      device.info.rssi = peripheral.rssi;
-      this.emit('deviceUpdated', device.info);
+        this.discoveredDevices.set(peripheral.id, { peripheral, info: deviceInfo });
+        
+        if (peripheral.advertisement.localName === 'Cosmo' && 
+            peripheral.advertisement.serviceUuids?.includes('000015231212efde1523785feabcd123')) {
+            console.log('Attempting to connect to Cosmo device...');
+            
+            // Stop scanning before attempting to connect
+            noble.stopScanning();
+            
+            this.connectToDevice(peripheral.id).then(success => {
+                if (success) {
+                    console.log('Connected successfully to Cosmo device!');
+                    // After successful connection, emit the connected device
+                    this.emit('deviceConnected', deviceInfo);
+                } else {
+                    console.log('Connection failed, restarting scan...');
+                    this.startScanning();
+                }
+            }).catch(error => {
+                console.error('Connection error:', error);
+                console.log('Restarting scan after error...');
+                this.startScanning();
+            });
+        }
+
+        peripheral.setMaxListeners(2);
+        
+        peripheral.on('connect', () => {
+            deviceInfo.connected = true;
+            this.connectedDevices.set(peripheral.id, { peripheral, info: deviceInfo });
+        });
+
+        peripheral.on('disconnect', () => {
+            console.log('Device disconnected:', deviceInfo.name);
+            this.handleDeviceDisconnect(peripheral.id);
+        });
+
+        this.emit('deviceDiscovered', deviceInfo);
     }
   }
 
@@ -133,7 +177,7 @@ class BLEServer extends EventEmitter {
 
       this.emit('deviceDisconnected', device.info);
       
-      // Restart scanning to rediscover the device if it comes back
+      // Use the new startScanning method
       this.startScanning();
     }
   }
@@ -176,35 +220,36 @@ class BLEServer extends EventEmitter {
     
     if (device) {
       try {
+        console.log('Connecting to device:', device.info.name);
         await device.peripheral.connectAsync();
         this.connectedDevices.set(deviceId, device);
         
         // Discover all services
+        console.log('Discovering services...');
         const services = await device.peripheral.discoverServicesAsync();
+        console.log('Found services:', services.map(s => s.uuid));
+        
         device.characteristics = new Map();
 
         // Process each service
         for (const service of services) {
+          console.log(`\nExploring service: ${service.uuid}`);
           const characteristics = await service.discoverCharacteristicsAsync();
+          console.log('Found characteristics:', characteristics.map(c => c.uuid));
           
           for (const characteristic of characteristics) {
             const normalizedCharUUID = normalizeUUID(characteristic.uuid);
+            console.log(`Processing characteristic: ${characteristic.uuid}`);
+            console.log('Properties:', characteristic.properties);
             
             // Store characteristic with both formats of UUID
             device.characteristics.set(characteristic.uuid, characteristic);
-            if (characteristic.uuid.includes('-')) {
-                device.characteristics.set(characteristic.uuid.replace(/-/g, ''), characteristic);
-            } else {
-                const uuidWithDashes = characteristic.uuid.replace(
-                    /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i,
-                    '$1-$2-$3-$4-$5'
-                );
-                device.characteristics.set(uuidWithDashes, characteristic);
-            }
+            device.characteristics.set(normalizedCharUUID, characteristic);
 
             try {
                 // Handle sensor characteristic
                 if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SENSOR)) {
+                    console.log('Found sensor characteristic');
                     await characteristic.subscribeAsync();
                     characteristic.on('data', (data) => {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.SENSOR, data);
@@ -212,6 +257,7 @@ class BLEServer extends EventEmitter {
                 }
                 // Handle button status characteristic
                 else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BUTTON_STATUS)) {
+                    console.log('Found button status characteristic');
                     await characteristic.subscribeAsync();
                     characteristic.on('data', (data) => {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BUTTON_STATUS, data);
@@ -219,6 +265,7 @@ class BLEServer extends EventEmitter {
                 }
                 // Handle battery level characteristic
                 else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BATTERY_LEVEL)) {
+                    console.log('Found battery level characteristic');
                     const batteryData = await characteristic.readAsync();
                     device.info.batteryLevel = batteryData[0];
                     await characteristic.subscribeAsync();
@@ -226,23 +273,28 @@ class BLEServer extends EventEmitter {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BATTERY_LEVEL, data);
                     });
                 }
-                // Read Serial Number
-                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SERIAL_NUMBER)) {
-                    const serialData = await characteristic.readAsync();
-                    device.info.serialNumber = serialData.toString().trim();
+                // Read device information characteristics
+                else if (characteristic.uuid === '2a29') { // Manufacturer Name
+                    const data = await characteristic.readAsync();
+                    console.log('Manufacturer:', data.toString());
                 }
-                // Read Firmware Version
-                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.FIRMWARE_VERSION)) {
-                    const firmwareData = await characteristic.readAsync();
-                    device.info.firmwareVersion = firmwareData.toString().trim();
+                else if (characteristic.uuid === '2a25') { // Serial Number
+                    const data = await characteristic.readAsync();
+                    device.info.serialNumber = data.toString().trim();
+                    console.log('Serial Number:', device.info.serialNumber);
                 }
-                // Read Hardware Version
-                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.HARDWARE_VERSION)) {
-                    const hardwareData = await characteristic.readAsync();
-                    device.info.hardwareVersion = hardwareData.toString().trim();
+                else if (characteristic.uuid === '2a27') { // Hardware Version
+                    const data = await characteristic.readAsync();
+                    device.info.hardwareVersion = data.toString().trim();
+                    console.log('Hardware Version:', device.info.hardwareVersion);
+                }
+                else if (characteristic.uuid === '2a26') { // Firmware Version
+                    const data = await characteristic.readAsync();
+                    device.info.firmwareVersion = data.toString().trim();
+                    console.log('Firmware Version:', device.info.firmwareVersion);
                 }
             } catch (error) {
-                console.error('Error setting up characteristic:', characteristic.uuid, error.message);
+                console.error('Error handling characteristic:', characteristic.uuid, error.message);
             }
           }
         }
@@ -255,19 +307,9 @@ class BLEServer extends EventEmitter {
               serialNumber: device.info.serialNumber || 'Unknown',
               hardwareRevision: device.info.hardwareVersion || 'Unknown',
               firmwareRevision: device.info.firmwareVersion || 'Unknown',
-              forceValue: device.info.forceValue || 0
+              batteryLevel: device.info.batteryLevel || null
             }
           }
-        });
-
-        this.emit('deviceConnected', {
-          id: deviceId,
-          name: device.info.name,
-          connected: true,
-          batteryLevel: device.info.batteryLevel,
-          serialNumber: device.info.serialNumber,
-          firmwareVersion: device.info.firmwareVersion,
-          hardwareVersion: device.info.hardwareVersion
         });
 
         return true;
@@ -451,6 +493,11 @@ class BLEServer extends EventEmitter {
         this.handleDeviceDisconnect(deviceId);
       }
     }
+  }
+
+  // Add this method to match the WebSocket server's expectation
+  startScanning() {
+    this.startScanningWithRetry();
   }
 }
 
