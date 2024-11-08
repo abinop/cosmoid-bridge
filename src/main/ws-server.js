@@ -1,5 +1,6 @@
 // WebSocket server implementation for handling client connections
 const WebSocket = require('ws');
+const logger = require('../common/logger');
 
 class WebSocketServer {
     constructor(server) {
@@ -16,7 +17,7 @@ class WebSocketServer {
 
     setupWebSocketServer() {
         this.wss.on('connection', (ws) => {
-            console.log('Client connected to WebSocket');
+            logger.log('WS_CONNECTION', 'New client connected');
 
             // Setup heartbeat
             ws.isAlive = true;
@@ -24,12 +25,28 @@ class WebSocketServer {
                 ws.isAlive = true;
             });
 
+            // Handle incoming messages
+            ws.on('message', (message) => {
+                try {
+                    const data = JSON.parse(message);
+                    logger.log('WS_MESSAGE', 'Received message', data);
+                    
+                    // Handle getDevices request
+                    if (data.type === 'getDevices') {
+                        // Trigger a device list update if needed
+                        // You might need to call your BLE server's method here
+                    }
+                } catch (error) {
+                    logger.log('WS_ERROR', 'Error processing message', error);
+                }
+            });
+
             ws.on('error', (error) => {
-                console.error('WebSocket client error:', error);
+                logger.log('WS_ERROR', 'WebSocket client error', error);
             });
 
             ws.on('close', () => {
-                console.log('Client disconnected from WebSocket');
+                logger.log('WS_DISCONNECT', 'Client disconnected');
             });
         });
 
@@ -37,7 +54,7 @@ class WebSocketServer {
         const interval = setInterval(() => {
             this.wss.clients.forEach((ws) => {
                 if (ws.isAlive === false) {
-                    console.log('Terminating inactive client');
+                    logger.log('WS_TIMEOUT', 'Terminating inactive client');
                     return ws.terminate();
                 }
                 
@@ -52,9 +69,17 @@ class WebSocketServer {
     }
 
     broadcast(data) {
+        // Ensure the message has the required 'type' field
+        const message = {
+            type: 'devicesList',  // This is crucial for the web client
+            ...data
+        };
+
+        logger.log('WS_BROADCAST', 'Broadcasting message', message);
+
         this.wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify(data));
+                client.send(JSON.stringify(message));
             }
         });
     }

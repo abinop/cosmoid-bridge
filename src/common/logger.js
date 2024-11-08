@@ -1,57 +1,57 @@
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
 
 class Logger {
-  constructor() {
-    this.logFile = path.join(
-      app.getPath('userData'),
-      'logs',
-      `app-${new Date().toISOString().split('T')[0]}.log`
-    );
+    constructor() {
+        this.logDir = path.join(__dirname, '../../../__help/logs');
+        this.logFile = path.join(this.logDir, 'bridge.log');
 
-    // Ensure logs directory exists
-    const logsDir = path.dirname(this.logFile);
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
+        // Ensure logs directory exists
+        if (!fs.existsSync(this.logDir)) {
+            fs.mkdirSync(this.logDir, { recursive: true });
+        }
+
+        // Clear existing log file
+        fs.writeFileSync(this.logFile, '');
     }
-  }
 
-  _write(level, ...args) {
-    const timestamp = new Date().toISOString();
-    const message = args.map(arg => 
-      typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
-    ).join(' ');
+    log(type, message, data = null) {
+        const timestamp = new Date().toISOString();
+        const logEntry = {
+            timestamp,
+            type,
+            message,
+            data
+        };
 
-    const logEntry = `[${timestamp}] [${level}] ${message}\n`;
+        // Write to file
+        fs.appendFileSync(this.logFile, JSON.stringify(logEntry, null, 2) + '\n');
 
-    // Write to file
-    fs.appendFileSync(this.logFile, logEntry);
-
-    // Also log to console
-    console[level.toLowerCase()](timestamp, message);
-  }
-
-  info(...args) {
-    this._write('INFO', ...args);
-  }
-
-  error(...args) {
-    this._write('ERROR', ...args);
-  }
-
-  warn(...args) {
-    this._write('WARN', ...args);
-  }
-
-  debug(...args) {
-    this._write('DEBUG', ...args);
-  }
-
-  getLogPath() {
-    return this.logFile;
-  }
+        // Minimal console output for important events
+        switch(type) {
+            case 'COSMO_CONNECTED':
+                console.log('🟢 Cosmo connected:', message);
+                break;
+            case 'COSMO_DISCONNECTED':
+                console.log('🔴 Cosmo disconnected:', message);
+                break;
+            case 'COSMO_UPDATED':
+                console.log('🔵 Cosmo updated:', message);
+                break;
+            case 'WS_ERROR':
+                console.error('❌ WebSocket error:', message);
+                break;
+            case 'WS_CONNECTION':
+                console.log('🌐 WebSocket:', message);
+                break;
+            case 'WS_BROADCAST':
+                // Only log the device count for broadcasts
+                if (data?.devices) {
+                    console.log(`📡 Broadcasting: ${data.devices.length} devices`);
+                }
+                break;
+        }
+    }
 }
 
-const logger = new Logger();
-module.exports = logger; 
+module.exports = new Logger(); 

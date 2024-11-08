@@ -6,28 +6,30 @@ function setupWebSocket() {
     const ws = new WebSocket('ws://localhost:8080');
     
     ws.onopen = () => {
-        console.log('WebSocket Connected');
+        console.log('🌐 WebSocket Connected');
+        document.querySelector('.status').classList.add('running');
         // Request initial device list
         ws.send(JSON.stringify({ type: 'getDevices' }));
     };
 
     ws.onclose = () => {
-        console.log('WebSocket Disconnected - Attempting to reconnect...');
+        console.log('🔴 WebSocket Disconnected - Attempting to reconnect...');
+        document.querySelector('.status').classList.remove('running');
         // Wait for 2 seconds before attempting to reconnect
         setTimeout(setupWebSocket, 2000);
     };
 
     ws.onerror = (error) => {
-        console.error('WebSocket Error:', error);
+        console.error('❌ WebSocket Error:', error);
     };
 
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            console.log('Received message:', data);
+            console.log('📥 Received message:', data);
 
             switch(data.type) {
-                case 'deviceList':
+                case 'devicesList':
                     updateDeviceList(data.devices);
                     break;
                 case 'deviceDiscovered':
@@ -53,10 +55,10 @@ function setupWebSocket() {
 
 // UI update functions
 function updateDeviceList(devices) {
-    console.log('Updating device list:', devices);
+    console.log('📱 Updating Cosmo list:', devices);
     const devicesList = document.getElementById('devicesList');
     if (!devicesList) {
-        console.error('devicesList element not found');
+        console.error('❌ devicesList element not found');
         return;
     }
 
@@ -109,7 +111,10 @@ function handleDeviceDisconnected(device) {
 }
 
 function handleDeviceUpdated(updateData) {
-    console.log('Device updated:', updateData);
+    console.log('🔵 Cosmo update received:', {
+        devices: updateData.devices,
+        deviceInfo: updateData.deviceInfo
+    });
     if (updateData.devices) {
         updateDeviceList(updateData.devices);
     }
