@@ -176,40 +176,25 @@ class BLEServer extends EventEmitter {
     
     if (device) {
       try {
-        // console.log('Attempting to connect to Cosmo device:', device.info.name);
         await device.peripheral.connectAsync();
-        // console.log('Connected successfully to:', device.info.name);
-
         this.connectedDevices.set(deviceId, device);
-        // console.log('Discovering services and characteristics...');
         
         // Discover all services
         const services = await device.peripheral.discoverServicesAsync();
-        // console.log('🔍 Discovered services:', services.map(s => s.uuid));
-
         device.characteristics = new Map();
 
         // Process each service
         for (const service of services) {
-          // console.log('🔍 Processing service:', service.uuid);
-          // Discover all characteristics for each service
           const characteristics = await service.discoverCharacteristicsAsync();
-          // console.log('🔍 Found characteristics for service:', characteristics.map(c => c.uuid));
           
           for (const characteristic of characteristics) {
             const normalizedCharUUID = normalizeUUID(characteristic.uuid);
-            // console.log('Processing characteristic:', {
-            //     uuid: characteristic.uuid,
-            //     isCommand: normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.COMMAND)
-            // });
             
             // Store characteristic with both formats of UUID
             device.characteristics.set(characteristic.uuid, characteristic);
             if (characteristic.uuid.includes('-')) {
-                // Also store without dashes for normalized lookup
                 device.characteristics.set(characteristic.uuid.replace(/-/g, ''), characteristic);
             } else {
-                // Also store with dashes for original format lookup
                 const uuidWithDashes = characteristic.uuid.replace(
                     /^([0-9a-f]{8})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{4})([0-9a-f]{12})$/i,
                     '$1-$2-$3-$4-$5'
@@ -218,18 +203,21 @@ class BLEServer extends EventEmitter {
             }
 
             try {
+                // Handle sensor characteristic
                 if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SENSOR)) {
                     await characteristic.subscribeAsync();
                     characteristic.on('data', (data) => {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.SENSOR, data);
                     });
                 }
+                // Handle button status characteristic
                 else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BUTTON_STATUS)) {
                     await characteristic.subscribeAsync();
                     characteristic.on('data', (data) => {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BUTTON_STATUS, data);
                     });
                 }
+                // Handle battery level characteristic
                 else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.BATTERY_LEVEL)) {
                     const batteryData = await characteristic.readAsync();
                     device.info.batteryLevel = batteryData[0];
@@ -238,15 +226,39 @@ class BLEServer extends EventEmitter {
                         this.handleCharacteristicData(deviceId, BLE_CHARACTERISTICS.BATTERY_LEVEL, data);
                     });
                 }
+                // Read Serial Number
                 else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.SERIAL_NUMBER)) {
                     const serialData = await characteristic.readAsync();
                     device.info.serialNumber = serialData.toString().trim();
+                }
+                // Read Firmware Version
+                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.FIRMWARE_VERSION)) {
+                    const firmwareData = await characteristic.readAsync();
+                    device.info.firmwareVersion = firmwareData.toString().trim();
+                }
+                // Read Hardware Version
+                else if (normalizedCharUUID === normalizeUUID(BLE_CHARACTERISTICS.HARDWARE_VERSION)) {
+                    const hardwareData = await characteristic.readAsync();
+                    device.info.hardwareVersion = hardwareData.toString().trim();
                 }
             } catch (error) {
                 console.error('Error setting up characteristic:', characteristic.uuid, error.message);
             }
           }
         }
+
+        // Emit device info after reading all characteristics
+        this.emit('deviceUpdated', {
+          devices: this.getAllDevices(),
+          deviceInfo: {
+            [deviceId]: {
+              serialNumber: device.info.serialNumber || 'Unknown',
+              hardwareRevision: device.info.hardwareVersion || 'Unknown',
+              firmwareRevision: device.info.firmwareVersion || 'Unknown',
+              forceValue: device.info.forceValue || 0
+            }
+          }
+        });
 
         this.emit('deviceConnected', {
           id: deviceId,
