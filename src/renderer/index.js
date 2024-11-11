@@ -1,130 +1,89 @@
 // Renderer process code
 const { ipcRenderer } = require('electron');
 
-// Add WebSocket connection handling with automatic reconnection
+// Add WebSocket handling for device updates
+let ws;
+
 function setupWebSocket() {
-    const ws = new WebSocket('ws://localhost:8080');
+    ws = new WebSocket('ws://localhost:8080/ws');
     
     ws.onopen = () => {
-        console.log('🌐 WebSocket Connected');
-        document.querySelector('.status').classList.add('running');
+        console.log('Connected to WebSocket server');
         // Request initial device list
         ws.send(JSON.stringify({ type: 'getDevices' }));
-    };
-
-    ws.onclose = () => {
-        console.log('🔴 WebSocket Disconnected - Attempting to reconnect...');
-        document.querySelector('.status').classList.remove('running');
-        // Wait for 2 seconds before attempting to reconnect
-        setTimeout(setupWebSocket, 2000);
-    };
-
-    ws.onerror = (error) => {
-        console.error('❌ WebSocket Error:', error);
     };
 
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            console.log('📥 Received message:', data);
-
-            switch(data.type) {
-                case 'devicesList':
-                    updateDeviceList(data.devices);
-                    break;
-                case 'deviceDiscovered':
-                    handleDeviceDiscovered(data.device);
-                    break;
-                case 'deviceConnected':
-                    handleDeviceConnected(data.device);
-                    break;
-                case 'deviceDisconnected':
-                    handleDeviceDisconnected(data.device);
-                    break;
-                case 'deviceUpdated':
-                    handleDeviceUpdated(data);
-                    break;
+            console.log('WebSocket message received:', data);
+            
+            if (data.devices) {
+                updateDeviceList(data.devices);
             }
         } catch (error) {
-            console.error('Error handling message:', error);
+            console.error('Error processing WebSocket message:', error);
         }
+    };
+
+    ws.onclose = () => {
+        console.log('WebSocket connection closed');
+        setTimeout(setupWebSocket, 2000); // Attempt to reconnect
     };
 
     return ws;
 }
 
+// Add refresh function
+function refreshDevices() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'refreshDevices' }));
+    }
+}
+
 // UI update functions
 function updateDeviceList(devices) {
-    console.log('📱 Updating Cosmo list:', devices);
     const devicesList = document.getElementById('devicesList');
-    if (!devicesList) {
-        console.error('❌ devicesList element not found');
+    if (!devicesList) return;
+
+    devicesList.innerHTML = `
+        <div class="refresh-button mb-4">
+            <button onclick="refreshDevices()" class="px-4 py-2 bg-blue-500 text-white rounded">
+                🔄 Refresh Devices
+            </button>
+        </div>
+    `;
+
+    if (devices.length === 0) {
+        devicesList.innerHTML += '<div class="no-devices">No devices connected</div>';
         return;
     }
 
-    if (!devices || devices.length === 0) {
-        devicesList.innerHTML = '<div class="no-devices">No devices connected</div>';
-        return;
-    }
-
-    devicesList.innerHTML = devices.map(device => `
-        <div class="device-item ${device.connected ? 'connected' : ''}" data-id="${device.id}">
+    devices.forEach(device => {
+        const deviceElement = document.createElement('div');
+        deviceElement.className = 'device-item p-4 border rounded mb-2';
+        deviceElement.innerHTML = `
             <div class="device-header">
                 <span class="device-name">${device.name || 'Unknown Device'}</span>
                 <span class="connection-status ${device.connected ? 'connected' : 'disconnected'}">
                     ${device.connected ? '🟢 Connected' : '⚪ Disconnected'}
                 </span>
             </div>
-            <div class="device-details">
-                <div class="device-info">
-                    <div>ID: ${device.id}</div>
+            ${device.connected ? `
+                <div class="device-info mt-2">
                     ${device.serialNumber ? `<div>Serial: ${device.serialNumber}</div>` : ''}
-                    ${device.batteryLevel ? `<div>Battery: ${device.batteryLevel}%</div>` : ''}
+                    ${device.firmwareVersion ? `<div>Firmware: ${device.firmwareVersion}</div>` : ''}
                 </div>
-            </div>
-        </div>
-    `).join('');
-}
-
-function handleDeviceDiscovered(device) {
-    console.log('Device discovered:', device);
-    // Request updated device list
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'getDevices' }));
-    }
-}
-
-function handleDeviceConnected(device) {
-    console.log('Device connected:', device);
-    // Request updated device list
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'getDevices' }));
-    }
-}
-
-function handleDeviceDisconnected(device) {
-    console.log('Device disconnected:', device);
-    // Request updated device list
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'getDevices' }));
-    }
-}
-
-function handleDeviceUpdated(updateData) {
-    console.log('🔵 Cosmo update received:', {
-        devices: updateData.devices,
-        deviceInfo: updateData.deviceInfo
+            ` : ''}
+        `;
+        devicesList.appendChild(deviceElement);
     });
-    if (updateData.devices) {
-        updateDeviceList(updateData.devices);
-    }
 }
 
-// Initialize WebSocket connection and UI handlers
-let ws;
+// Initialize when the document is ready
 document.addEventListener('DOMContentLoaded', () => {
-    // Initialize WebSocket
-    ws = setupWebSocket();
+    // Setup WebSocket connection
+    setupWebSocket();
 
     // Setup auto-launch checkbox handler
     const autoLaunchCheckbox = document.getElementById('autoLaunch');
@@ -140,5 +99,20 @@ document.addEventListener('DOMContentLoaded', () => {
         hideButton.addEventListener('click', () => {
             ipcRenderer.send('hide-window');
         });
+    }
+});
+
+// Handle IPC events from main process
+ipcRenderer.on('deviceDiscovered', (event, device) => {
+    console.log('Device discovered:', device);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'getDevices' }));
+    }
+});
+
+ipcRenderer.on('deviceRemoved', (event, deviceId) => {
+    console.log('Device removed:', deviceId);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'getDevices' }));
     }
 });

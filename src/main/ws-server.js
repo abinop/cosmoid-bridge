@@ -1,88 +1,222 @@
-// WebSocket server implementation for handling client connections
 const WebSocket = require('ws');
-const logger = require('../common/logger');
+const EventEmitter = require('events');
 
-class WebSocketServer {
-    constructor(server) {
-        this.wss = new WebSocket.Server({ 
-            server,
-            // Add ping-pong heartbeat
-            clientTracking: true,
-            pingInterval: 30000,
-            pingTimeout: 5000
-        });
+class WSServer extends EventEmitter {
+  constructor(bleServer) {
+    super();
+    this.bleServer = bleServer;
+    this.wss = null;
+    this.clients = new Set();
+  }
 
-        this.setupWebSocketServer();
+  initialize() {
+    // Try to close any existing server
+    if (this.wss) {
+      try {
+        this.wss.close();
+      } catch (err) {
+        console.error('Error closing existing WebSocket server:', err);
+      }
     }
 
-    setupWebSocketServer() {
-        this.wss.on('connection', (ws) => {
-            logger.log('WS_CONNECTION', 'New client connected');
+    // Create new server with more permissive options
+    this.wss = new WebSocket.Server({
+      port: 8080,
+      host: 'localhost', // Changed from 0.0.0.0 to localhost
+      perMessageDeflate: false,
+      clientTracking: true,
+      backlog: 100,
+      handleProtocols: () => 'cosmoid-protocol' // Add protocol support
+    });
 
-            // Setup heartbeat
-            ws.isAlive = true;
-            ws.on('pong', () => {
-                ws.isAlive = true;
-            });
+    console.log('WebSocket server listening on ws://localhost:8080');
 
-            // Handle incoming messages
-            ws.on('message', (message) => {
-                try {
-                    const data = JSON.parse(message);
-                    logger.log('WS_MESSAGE', 'Received message', data);
-                    
-                    // Handle getDevices request
-                    if (data.type === 'getDevices') {
-                        // Trigger a device list update if needed
-                        // You might need to call your BLE server's method here
-                    }
-                } catch (error) {
-                    logger.log('WS_ERROR', 'Error processing message', error);
-                }
-            });
+    this.wss.on('listening', () => {
+      console.log('WebSocket server is now listening');
+    });
 
-            ws.on('error', (error) => {
-                logger.log('WS_ERROR', 'WebSocket client error', error);
-            });
+    this.wss.on('error', (error) => {
+      console.error('WebSocket server error:', error);
+      // Try to restart server on error
+      setTimeout(() => {
+        console.log('Attempting to restart WebSocket server...');
+        this.initialize();
+      }, 5000);
+    });
 
-            ws.on('close', () => {
-                logger.log('WS_DISCONNECT', 'Client disconnected');
-            });
-        });
+    this.wss.on('connection', (ws, req) => {
+      console.log('New WebSocket client connected from:', req.socket.remoteAddress);
+      this.clients.add(ws);
 
-        // Implement heartbeat check
-        const interval = setInterval(() => {
-            this.wss.clients.forEach((ws) => {
-                if (ws.isAlive === false) {
-                    logger.log('WS_TIMEOUT', 'Terminating inactive client');
-                    return ws.terminate();
-                }
-                
-                ws.isAlive = false;
-                ws.ping(() => {});
-            });
-        }, 30000);
+      // Send initial connected message
+      this.sendMessage(ws, { 
+        type: 'connected',
+        message: 'Successfully connected to Cosmoid Bridge'
+      });
 
-        this.wss.on('close', () => {
-            clearInterval(interval);
-        });
+      // Get and send current connected devices
+      const connectedDevices = this.bleServer.getConnectedDevices();
+      console.log('Sending initial device list:', connectedDevices);
+      this.sendMessage(ws, {
+        type: 'devicesList',
+        devices: connectedDevices
+      });
+
+      ws.on('message', (message) => {
+        console.log('Received message:', message.toString());
+        this.handleMessage(ws, message);
+      });
+
+      ws.on('close', (code, reason) => {
+        console.log('WebSocket client disconnected:', code, reason);
+        this.clients.delete(ws);
+      });
+
+      ws.on('error', (error) => {
+        console.error('WebSocket client error:', error);
+        this.clients.delete(ws);
+      });
+
+      // Set up ping-pong to keep connection alive
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+    });
+
+    // Set up ping interval to keep connections alive
+    this.pingInterval = setInterval(() => {
+      this.wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+          this.clients.delete(ws);
+          return ws.terminate();
+        }
+        ws.isAlive = false;
+        ws.ping(() => {});
+      });
+    }, 30000);
+
+    // Listen for BLE server events
+    this.bleServer.removeAllListeners();  // Clear any existing listeners
+    
+    this.bleServer.on('deviceUpdated', (data) => {
+      console.log('Device update received:', data);
+      if (data.devices && data.devices.length > 0) {
+        this.broadcast(data);
+      }
+    });
+
+    this.bleServer.on('deviceConnected', (device) => {
+      console.log('Device connected:', device);
+      this.broadcast({
+        type: 'deviceConnected',
+        device
+      });
+      // Also send updated device list
+      const devices = this.bleServer.getConnectedDevices();
+      this.broadcast({
+        type: 'devicesList',
+        devices
+      });
+    });
+
+    this.bleServer.on('deviceDisconnected', (device) => {
+      console.log('Broadcasting device disconnected:', device);
+      this.broadcast({
+        type: 'deviceDisconnected',
+        device
+      });
+    });
+  }
+
+  sendMessage(ws, data) {
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        const message = JSON.stringify(data);
+        console.log('Sending message:', message);
+        ws.send(message);
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
     }
+  }
 
-    broadcast(data) {
-        // Ensure the message has the required 'type' field
-        const message = {
-            type: 'devicesList',  // This is crucial for the web client
-            ...data
-        };
-
-        logger.log('WS_BROADCAST', 'Broadcasting message', message);
-
-        this.wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify(message));
-            }
-        });
+  broadcast(data) {
+    if (!data) return;
+    console.log('Broadcasting to clients:', data);
+    for (const client of this.clients) {
+        if (client.readyState === WebSocket.OPEN) {
+            this.sendMessage(client, data);
+        }
     }
+  }
+
+  handleMessage(ws, message) {
+    try {
+      const data = JSON.parse(message);
+      
+      switch (data.type) {
+        case 'getDevices':
+          this.sendMessage(ws, {
+            type: 'devicesList',
+            devices: this.bleServer.getAllDevices()
+          });
+          break;
+
+        case 'getDeviceInfo':
+          if (!data.deviceId) {
+            this.sendError(ws, 'deviceId is required');
+            return;
+          }
+          break;
+
+        case 'subscribe':
+          if (!data.deviceId || !data.characteristicUUID) {
+            this.sendError(ws, 'deviceId and characteristicUUID are required');
+            return;
+          }
+          break;
+
+        case 'setColor':
+          if (!data.deviceId || !Array.isArray(data.data) || data.data.length !== 3) {
+            this.sendError(ws, 'Invalid color data');
+            return;
+          }
+          const rgb = data.data.map(v => Math.max(0, Math.min(4, v)));
+          this.bleServer.setColor(data.deviceId, rgb);
+          break;
+
+        case 'setLuminosity':
+          if (!data.deviceId || !Array.isArray(data.data) || data.data.length !== 1) {
+            this.sendError(ws, 'Invalid luminosity data');
+            return;
+          }
+          const luminosity = Math.max(5, Math.min(64, data.data[0]));
+          this.bleServer.setLuminosity(data.deviceId, luminosity);
+          break;
+
+        default:
+          console.warn('Unknown message type:', data.type);
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
+      this.sendError(ws, 'Invalid message format');
+    }
+  }
+
+  sendError(ws, message) {
+    this.sendMessage(ws, {
+      type: 'error',
+      message
+    });
+  }
+
+  close() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
+    if (this.wss) {
+      this.wss.close();
+    }
+  }
 }
 
-module.exports = { WebSocketServer };
+module.exports = { WSServer };
