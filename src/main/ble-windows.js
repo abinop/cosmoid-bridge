@@ -8,7 +8,6 @@ class BLEManager {
     this.isScanning = false;
     this.logPath = path.join(process.env.APPDATA, 'Cosmoid Bridge', 'debug.log');
     
-    // Ensure log directory exists
     const logDir = path.dirname(this.logPath);
     if (!fs.existsSync(logDir)) {
       fs.mkdirSync(logDir, { recursive: true });
@@ -24,7 +23,7 @@ class BLEManager {
   async initialize() {
     try {
       const btStatus = await this.runPowerShell(`
-        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth" -and $_.FriendlyName -like "*Radio*"}
+        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
         if ($radio.Status -eq 'OK') { Write-Output 'enabled' } else { Write-Output 'disabled' }
       `);
 
@@ -34,7 +33,7 @@ class BLEManager {
 
       return this;
     } catch (error) {
-      console.error('Failed to initialize BLE:', error);
+      this.log('Initialize error', error);
       throw error;
     }
   }
@@ -47,43 +46,30 @@ class BLEManager {
       const result = await this.runPowerShell(`
         $devices = Get-PnpDevice | Where-Object {
           $_.Class -eq "Bluetooth" -and 
-          $_.Status -eq "OK"
-        } | Select-Object DeviceID, FriendlyName, Class, Status, Manufacturer, HardwareID
-
-        $devices | ForEach-Object {
-          $_ | Add-Member -MemberType NoteProperty -Name "Details" -Value ($_.HardwareID -join "; ")
+          $_.Status -eq "OK" -and 
+          $_.Present -eq $true
         }
-
-        $devices | ConvertTo-Json -Depth 10
+        $devices | ConvertTo-Json
       `);
 
-      this.log('All discovered devices', result);
+      this.log('Raw devices data', result);
 
       const devices = JSON.parse(result || '[]');
       if (Array.isArray(devices)) {
         devices.forEach(device => {
-          this.log('Device details', {
-            name: device.FriendlyName,
-            manufacturer: device.Manufacturer,
-            details: device.Details
-          });
-
-          if (device.FriendlyName && (
-              device.FriendlyName.includes('Cosmo') || 
-              device.Manufacturer?.includes('Filisia') ||
-              device.Details?.includes('Cosmo')
-          )) {
+          this.log('Processing device', device);
+          if (device.DeviceID) {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
-              name: device.FriendlyName,
-              manufacturer: device.Manufacturer,
-              details: device.Details,
-              connected: device.Status === 'OK',
-              battery: 100
+              name: device.FriendlyName || 'Unknown Device',
+              address: device.DeviceID.split('\\').pop(),
+              connected: device.Status === 'OK'
             });
           }
         });
       }
+
+      this.log('Final devices list', Array.from(this.devices.values()));
     } catch (error) {
       this.log('Scanning error', error);
     } finally {
@@ -105,12 +91,12 @@ class BLEManager {
         { shell: true }, 
         (error, stdout, stderr) => {
           if (error) {
-            console.error('PowerShell Error:', error);
+            this.log('PowerShell Error', error);
             reject(error);
             return;
           }
           if (stderr) {
-            console.error('PowerShell stderr:', stderr);
+            this.log('PowerShell stderr', stderr);
           }
           resolve(stdout);
         }).stdin.end(script);
