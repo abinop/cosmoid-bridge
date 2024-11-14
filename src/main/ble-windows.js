@@ -5,12 +5,10 @@ class BLEManager {
   constructor() {
     this.devices = new Map();
     this.isScanning = false;
-    this.powershellPath = path.join(__dirname, 'ble-scanner.ps1');
   }
 
   async initialize() {
     try {
-      // Check if Bluetooth is enabled using PowerShell
       const btStatus = await this.runPowerShell(`
         $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
         if ($radio.Status -eq 'OK') { Write-Output 'enabled' } else { Write-Output 'disabled' }
@@ -33,24 +31,40 @@ class BLEManager {
     this.isScanning = true;
     try {
       const result = await this.runPowerShell(`
-        $btRadio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
         $devices = Get-PnpDevice | Where-Object {
+          $_.Name -like "*Cosmo*" -and 
           $_.Class -eq "Bluetooth" -and 
           $_.Status -eq "OK" -and 
           $_.Present -eq $true
         }
-        $devices | ConvertTo-Json
+        
+        $deviceList = @()
+        foreach ($device in $devices) {
+          $batteryInfo = Get-WmiObject -Class Win32_Battery | Where-Object { $_.Name -like "*$($device.FriendlyName)*" }
+          $batteryLevel = if ($batteryInfo) { $batteryInfo.EstimatedChargeRemaining } else { 0 }
+          
+          $deviceInfo = @{
+            DeviceID = $device.DeviceID
+            Name = $device.FriendlyName
+            Status = $device.Status
+            Battery = $batteryLevel
+          }
+          $deviceList += $deviceInfo
+        }
+        
+        ConvertTo-Json -InputObject $deviceList
       `);
 
-      const devices = JSON.parse(result);
+      const devices = JSON.parse(result || '[]');
       if (Array.isArray(devices)) {
         devices.forEach(device => {
           if (device.DeviceID) {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
-              name: device.FriendlyName || 'Unknown Device',
+              name: device.Name || 'Unknown Cosmo Device',
               address: device.DeviceID.split('\\').pop(),
-              connected: device.Status === 'OK'
+              connected: device.Status === 'OK',
+              battery: device.Battery
             });
           }
         });
@@ -68,19 +82,6 @@ class BLEManager {
 
   async getDevices() {
     return Array.from(this.devices.values());
-  }
-
-  async isBluetoothAvailable() {
-    try {
-      const result = await this.runPowerShell(`
-        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
-        if ($radio) { Write-Output 'true' } else { Write-Output 'false' }
-      `);
-      return result.trim() === 'true';
-    } catch (error) {
-      console.error('Error checking Bluetooth availability:', error);
-      return false;
-    }
   }
 
   runPowerShell(script) {
@@ -105,20 +106,4 @@ class BLEManager {
   }
 }
 
-// Create a singleton instance with error handling
-let bleManager = null;
-try {
-  bleManager = new BLEManager();
-} catch (error) {
-  console.error('Failed to create BLE Manager:', error);
-  // Return a dummy manager that reports Bluetooth as unavailable
-  bleManager = {
-    initialize: async () => { throw new Error('BLE not available'); },
-    startScanning: async () => [],
-    stopScanning: async () => {},
-    getDevices: async () => [],
-    isBluetoothAvailable: async () => false
-  };
-}
-
-module.exports = bleManager; 
+module.exports = new BLEManager(); 
