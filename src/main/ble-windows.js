@@ -44,49 +44,43 @@ class BLEManager {
     this.isScanning = true;
     try {
       const result = await this.runPowerShell(`
-        $devices = Get-PnpDevice | Where-Object {
-          $_.Class -eq "Bluetooth" -and 
+        $devices = @(Get-PnpDevice -Class Bluetooth -PresentOnly | Where-Object { 
           $_.Status -eq "OK" -and 
-          $_.Present -eq $true
-        } | ForEach-Object {
-          $device = $_
-          $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
-          $deviceProps = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
-          
-          @{
-            DeviceID = $device.DeviceID
-            FriendlyName = $device.FriendlyName
-            Description = $device.Description
-            Manufacturer = $device.Manufacturer
-            HardwareIDs = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
-            Service = $device.Service
-            Status = $device.Status
-            Properties = $deviceProps
-          }
-        } | ConvertTo-Json -Depth 10
+          ($_.Service -eq "BthLEEnum" -or $_.Service -eq "BTHLE")
+        } | Select-Object DeviceID, FriendlyName, Description, Manufacturer, Service, Status)
+        if ($devices.Count -eq 0) {
+          Write-Output "No BLE devices found"
+        } else {
+          $devices | ConvertTo-Json
+        }
       `);
 
-      this.log('Raw devices data', result);
+      this.log('Raw PowerShell output', result);
+
+      if (result.includes("No BLE devices found")) {
+        this.log('No devices found', null);
+        return;
+      }
 
       const devices = JSON.parse(result || '[]');
-      if (Array.isArray(devices)) {
-        devices.forEach(device => {
-          this.log('Processing device', device);
-          if (device.DeviceID && device.Service === 'BthLEEnum') {
-            this.devices.set(device.DeviceID, {
-              id: device.DeviceID,
-              name: device.FriendlyName || 'Unknown Device',
-              address: device.DeviceID.split('\\').pop(),
-              connected: device.Status === 'OK',
-              hardwareIds: device.HardwareIDs || []
-            });
-          }
-        });
-      }
+      const deviceArray = Array.isArray(devices) ? devices : [devices];
+      
+      deviceArray.forEach(device => {
+        this.log('Found device', device);
+        if (device.DeviceID) {
+          this.devices.set(device.DeviceID, {
+            id: device.DeviceID,
+            name: device.FriendlyName || 'Unknown Device',
+            address: device.DeviceID.split('\\').pop(),
+            connected: device.Status === 'OK'
+          });
+        }
+      });
 
       this.log('Final devices list', Array.from(this.devices.values()));
     } catch (error) {
-      this.log('Scanning error', error);
+      this.log('Scanning error', error.toString());
+      this.log('Scanning error stack', error.stack);
     } finally {
       this.isScanning = false;
     }
