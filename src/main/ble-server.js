@@ -5,7 +5,7 @@ class BLEServer extends EventEmitter {
   constructor() {
     super();
     this.devices = new Map();
-    this.isScanning = false;
+    console.log('BLEServer initialized');
   }
 
   async initialize() {
@@ -19,25 +19,12 @@ class BLEServer extends EventEmitter {
   }
 
   async startScanning() {
-    if (this.isScanning) return;
-    
+    console.log('BLEServer.startScanning called');
     try {
-      this.isScanning = true;
       await ble.startScanning();
-      
-      // Get devices periodically while scanning
-      this.scanInterval = setInterval(async () => {
-        const devices = await ble.getDevices();
-        devices.forEach(device => {
-          if (!this.devices.has(device.id)) {
-            this.devices.set(device.id, device);
-            this.emit('deviceFound', device);
-          }
-        });
-      }, 1000);
-
+      console.log('Scanning started successfully');
     } catch (error) {
-      console.error('Scanning error:', error);
+      console.error('Error starting scan:', error);
       this.emit('error', error);
     }
   }
