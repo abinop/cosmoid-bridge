@@ -1,101 +1,65 @@
-const ffi = require('ffi-napi');
-const ref = require('ref-napi');
-const Struct = require('ref-struct-napi');
-
-// Define Windows Bluetooth LE structures
-const BLUETOOTH_DEVICE_INFO = Struct({
-  dwSize: 'uint32',
-  address: 'uint64',
-  ulClassofDevice: 'uint32',
-  fConnected: 'bool',
-  fRemembered: 'bool',
-  fAuthenticated: 'bool',
-  szName: ref.types.CString
-});
+const { exec } = require('child_process');
+const path = require('path');
 
 class BLEManager {
   constructor() {
     this.devices = new Map();
     this.isScanning = false;
-    this.bluetooth = null;
-    
-    try {
-      // Load Windows Bluetooth API
-      this.bluetooth = ffi.Library('Bthprops.cpl', {
-        'BluetoothFindFirstDevice': ['pointer', []],
-        'BluetoothFindNextDevice': ['bool', ['pointer', ref.refType(BLUETOOTH_DEVICE_INFO)]],
-        'BluetoothFindDeviceClose': ['bool', ['pointer']]
-      });
-    } catch (error) {
-      console.error('Failed to load Bluetooth API:', error);
-      // Don't throw here, let the initialize method handle the error state
-    }
+    this.powershellPath = path.join(__dirname, 'ble-scanner.ps1');
   }
 
   async initialize() {
-    return new Promise((resolve, reject) => {
-      try {
-        // Check if we can access the Bluetooth API
-        if (!this.bluetooth) {
-          console.error('Bluetooth API not available');
-          return reject(new Error('Bluetooth API not available'));
-        }
+    try {
+      // Check if Bluetooth is enabled using PowerShell
+      const btStatus = await this.runPowerShell(`
+        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
+        if ($radio.Status -eq 'OK') { Write-Output 'enabled' } else { Write-Output 'disabled' }
+      `);
 
-        // Try a simple API call to test the connection
-        const handle = this.bluetooth.BluetoothFindFirstDevice();
-        if (handle) {
-          this.bluetooth.BluetoothFindDeviceClose(handle);
-        }
-
-        resolve(this);
-      } catch (error) {
-        console.error('Failed to initialize BLE:', error);
-        reject(error);
+      if (btStatus.trim() !== 'enabled') {
+        throw new Error('Bluetooth is not enabled');
       }
-    });
+
+      return this;
+    } catch (error) {
+      console.error('Failed to initialize BLE:', error);
+      throw error;
+    }
   }
 
   async startScanning() {
-    if (this.isScanning || !this.bluetooth) {
-      return;
-    }
+    if (this.isScanning) return;
 
     this.isScanning = true;
     try {
-      const deviceInfo = new BLUETOOTH_DEVICE_INFO();
-      deviceInfo.dwSize = BLUETOOTH_DEVICE_INFO.size;
+      const result = await this.runPowerShell(`
+        $btRadio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
+        $devices = Get-PnpDevice | Where-Object {
+          $_.Class -eq "Bluetooth" -and 
+          $_.Status -eq "OK" -and 
+          $_.Present -eq $true
+        }
+        $devices | ConvertTo-Json
+      `);
 
-      const handle = this.bluetooth.BluetoothFindFirstDevice();
-      if (!handle || handle.isNull()) {
-        this.isScanning = false;
-        return;
-      }
-
-      try {
-        do {
-          if (deviceInfo && deviceInfo.szName) {
-            const device = {
-              name: deviceInfo.szName,
-              address: deviceInfo.address ? deviceInfo.address.toString(16) : 'unknown',
-              connected: !!deviceInfo.fConnected,
-              remembered: !!deviceInfo.fRemembered,
-              authenticated: !!deviceInfo.fAuthenticated
-            };
-            
-            this.devices.set(device.address, device);
+      const devices = JSON.parse(result);
+      if (Array.isArray(devices)) {
+        devices.forEach(device => {
+          if (device.DeviceID) {
+            this.devices.set(device.DeviceID, {
+              id: device.DeviceID,
+              name: device.FriendlyName || 'Unknown Device',
+              address: device.DeviceID.split('\\').pop(),
+              connected: device.Status === 'OK'
+            });
           }
-        } while (this.bluetooth.BluetoothFindNextDevice(handle, deviceInfo));
-      } finally {
-        // Always close the handle
-        this.bluetooth.BluetoothFindDeviceClose(handle);
+        });
       }
     } catch (error) {
       console.error('Scanning error:', error);
+    } finally {
       this.isScanning = false;
-      throw error;
     }
-    
-    this.isScanning = false;
   }
 
   async stopScanning() {
@@ -106,14 +70,38 @@ class BLEManager {
     return Array.from(this.devices.values());
   }
 
-  // Helper method to check if Bluetooth is available
   async isBluetoothAvailable() {
     try {
-      return !!this.bluetooth;
+      const result = await this.runPowerShell(`
+        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
+        if ($radio) { Write-Output 'true' } else { Write-Output 'false' }
+      `);
+      return result.trim() === 'true';
     } catch (error) {
       console.error('Error checking Bluetooth availability:', error);
       return false;
     }
+  }
+
+  runPowerShell(script) {
+    return new Promise((resolve, reject) => {
+      const ps = exec('powershell.exe -NoProfile -NonInteractive -Command -', 
+        { shell: true }, 
+        (error, stdout, stderr) => {
+          if (error) {
+            console.error('PowerShell Error:', error);
+            reject(error);
+            return;
+          }
+          if (stderr) {
+            console.error('PowerShell stderr:', stderr);
+          }
+          resolve(stdout);
+        });
+
+      ps.stdin.write(script);
+      ps.stdin.end();
+    });
   }
 }
 

@@ -11,21 +11,15 @@
     "build": "node scripts/build.js",
     "package": "node scripts/package.js",
     "package:mac": "electron-builder --mac",
-    "package:win": "electron-builder --win",
-    "rebuild": "electron-rebuild",
-    "postinstall": "npm run rebuild"
+    "package:win": "electron-builder --win"
   },
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "ref-napi": "^3.0.3",
-    "ref-struct-napi": "^1.1.1",
     "auto-launch": "^5.0.6",
     "electron-store": "^8.1.0",
     "ws": "^8.13.0"
   },
   "devDependencies": {
     "electron": "22.3.27",
-    "electron-builder": "23.6.0",
-    "electron-rebuild": "^3.2.9"
+    "electron-builder": "23.6.0"
   }
 }
