@@ -47,13 +47,23 @@ class BLEManager {
         $devices = Get-PnpDevice | Where-Object {
           $_.Class -eq "Bluetooth" -and 
           $_.Status -eq "OK" -and 
-          $_.Present -eq $true -and
-          $_.FriendlyName -notlike "*Transport*" -and
-          $_.FriendlyName -notlike "*Enumerator*" -and
-          $_.FriendlyName -notlike "*Service*" -and
-          $_.Description -like "*LE*"
-        }
-        $devices | ConvertTo-Json
+          $_.Present -eq $true
+        } | ForEach-Object {
+          $device = $_
+          $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
+          $deviceProps = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
+          
+          @{
+            DeviceID = $device.DeviceID
+            FriendlyName = $device.FriendlyName
+            Description = $device.Description
+            Manufacturer = $device.Manufacturer
+            HardwareIDs = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
+            Service = $device.Service
+            Status = $device.Status
+            Properties = $deviceProps
+          }
+        } | ConvertTo-Json -Depth 10
       `);
 
       this.log('Raw devices data', result);
@@ -62,12 +72,13 @@ class BLEManager {
       if (Array.isArray(devices)) {
         devices.forEach(device => {
           this.log('Processing device', device);
-          if (device.DeviceID && device.FriendlyName) {
+          if (device.DeviceID && device.Service === 'BthLEEnum') {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
-              name: device.FriendlyName,
+              name: device.FriendlyName || 'Unknown Device',
               address: device.DeviceID.split('\\').pop(),
-              connected: device.Status === 'OK'
+              connected: device.Status === 'OK',
+              hardwareIds: device.HardwareIDs || []
             });
           }
         });
