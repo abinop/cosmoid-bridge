@@ -45,11 +45,8 @@ class BLEManager {
 
     this.isScanning = true;
     try {
-      this.log('startScanning', 'Executing PowerShell commands');
-      
       // First command: Get paired/known devices
       const pairedCommand = `
-        Write-Output "Getting paired devices..."
         $devices = @(Get-PnpDevice | Where-Object { 
           ($_.Class -eq "BTHLEDevice" -or $_.Class -eq "Bluetooth") -and 
           $_.Present -eq $true
@@ -71,63 +68,99 @@ class BLEManager {
           }
         })
         
-        $result | ConvertTo-Json -Depth 10
+        ConvertTo-Json -InputObject $result -Depth 10
       `;
 
-      // Second command: Look for advertising devices
+      // Second command: Look for advertising devices using BluetoothLEAdvertisementWatcher
       const scanCommand = `
-        Write-Output "Scanning for advertising devices..."
-        Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 })[0]
+        $source = @"
+        using System;
+        using System.Threading;
+        using Windows.Devices.Bluetooth.Advertisement;
         
-        Function Await($WinRtTask, $ResultType) {
-            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
-            $netTask = $asTask.Invoke($null, @($WinRtTask))
-            $netTask.Wait(-1) | Out-Null
-            $netTask.Result
-        }
-        
-        [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
-        
-        $aqsFilter = "System.Devices.Aep.ProtocolId:={bb7bb05e-5972-42b5-94fc-76eaa7084d49}"
-        $deviceInfos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($aqsFilter)) ([Windows.Devices.Enumeration.DeviceInformationCollection])
-        
-        $result = @($deviceInfos | ForEach-Object {
-            @{
-                DeviceID = $_.Id
-                Class = "BTHLEDevice"
-                FriendlyName = $_.Name
-                Description = "Advertising BLE Device"
-                Status = "Available"
-                IsPaired = $false
-                IsAdvertising = $true
+        public class BLEScanner {
+            public static string ScanForDevices(int scanTime = 5) {
+                var devices = new System.Collections.Generic.List<object>();
+                var watcher = new BluetoothLEAdvertisementWatcher();
+                var scanComplete = new ManualResetEvent(false);
+                
+                // Set active scanning mode
+                watcher.ScanningMode = BluetoothLEScanningMode.Active;
+                
+                watcher.Received += (sender, args) => {
+                    var serviceUuids = args.Advertisement.ServiceUuids;
+                    var isCosmoDevice = false;
+                    
+                    // Check for Cosmo service UUID
+                    foreach (var uuid in serviceUuids) {
+                        if (uuid.ToString().Equals("00001523-1212-efde-1523-785feabcd123", StringComparison.OrdinalIgnoreCase)) {
+                            isCosmoDevice = true;
+                            break;
+                        }
+                    }
+                    
+                    // Check device name
+                    if (args.Advertisement.LocalName != null && 
+                        args.Advertisement.LocalName.Contains("Cosmo", StringComparison.OrdinalIgnoreCase)) {
+                        isCosmoDevice = true;
+                    }
+                    
+                    if (isCosmoDevice) {
+                        var device = new {
+                            Address = args.BluetoothAddress.ToString("X"),
+                            Rssi = args.RawSignalStrengthInDBm,
+                            Name = args.Advertisement.LocalName,
+                            IsConnectable = args.Advertisement.IsConnectable,
+                            Timestamp = DateTime.Now,
+                            ServiceUuids = args.Advertisement.ServiceUuids,
+                            IsCosmoDevice = true
+                        };
+                        devices.Add(device);
+                    }
+                };
+                
+                watcher.Start();
+                scanComplete.WaitOne(scanTime * 1000);
+                watcher.Stop();
+                
+                return System.Text.Json.JsonSerializer.Serialize(devices);
             }
-        })
+        }
+"@
         
-        $result | ConvertTo-Json -Depth 10
+        Add-Type -TypeDefinition $source -Language CSharp -ReferencedAssemblies @(
+            "System.Runtime",
+            "System.Collections",
+            "System.Text.Json",
+            ([System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBuffer].Assembly.Location)
+        )
+        
+        [BLEScanner]::ScanForDevices(5)
       `;
 
-      // Execute both commands
-      const [pairedResult, scanResult] = await Promise.all([
-        this.runPowerShell(pairedCommand),
-        this.runPowerShell(scanCommand)
-      ]);
+      // Execute commands
+      this.log('Executing paired devices query');
+      const pairedResult = await this.runPowerShell(pairedCommand);
+      this.log('Paired devices raw output', pairedResult);
 
-      this.log('PowerShell paired devices output', pairedResult);
-      this.log('PowerShell scan output', scanResult);
+      this.log('Executing BLE scan');
+      const scanResult = await this.runPowerShell(scanCommand);
+      this.log('BLE scan raw output', scanResult);
 
       // Process results
       try {
         const pairedDevices = JSON.parse(pairedResult || '[]');
         const scanningDevices = JSON.parse(scanResult || '[]');
-        const allDevices = [...(Array.isArray(pairedDevices) ? pairedDevices : [pairedDevices]),
-                           ...(Array.isArray(scanningDevices) ? scanningDevices : [scanningDevices])];
         
-        this.log('All discovered devices', allDevices);
-        
-        allDevices.forEach(device => {
+        this.log('Parsed paired devices', pairedDevices);
+        this.log('Parsed scanning devices', scanningDevices);
+
+        // Clear existing devices
+        this.devices.clear();
+
+        // Process paired devices
+        pairedDevices.forEach(device => {
           if (device.DeviceID) {
-            // Look for potential Cosmo devices
             const isCosmoDevice = 
               device.FriendlyName?.toLowerCase().includes('cosmo') ||
               device.FriendlyName?.toLowerCase().includes('csm') ||
@@ -143,11 +176,27 @@ class BLEManager {
                 class: device.Class,
                 manufacturer: device.Manufacturer,
                 description: device.Description,
-                isPaired: device.IsPaired,
-                isAdvertising: device.IsAdvertising
+                isPaired: true,
+                isAdvertising: false
               });
             }
           }
+        });
+
+        // Process advertising devices
+        scanningDevices.forEach(device => {
+          const deviceId = `BTHLE_${device.Address}`;
+          this.devices.set(deviceId, {
+            id: deviceId,
+            name: device.Name || `Unknown Device (${device.Address})`,
+            address: device.Address,
+            connected: false,
+            class: 'BTHLEDevice',
+            rssi: device.Rssi,
+            isPaired: false,
+            isAdvertising: true,
+            serviceUuids: device.ServiceUuids || []
+          });
         });
 
         this.log('Final devices map', Array.from(this.devices.values()));

@@ -12,10 +12,6 @@ module.exports = {
     FIRMWARE_VERSION: '2a26',
     HARDWARE_VERSION: '2a27'
   },
-  WS_PORT: 8080,
-  COSMOID_IDENTIFIERS: {
-    NAME_PATTERNS: ['cosmoid', 'csm'],
-    MANUFACTURER_ID: '0x0000',
-    SERVICE_UUID: '0xCSM1'
-  }
+  COSMO_SERVICE_UUID: '00001523-1212-efde-1523-785feabcd123',
+  WS_PORT: 8080
 };
