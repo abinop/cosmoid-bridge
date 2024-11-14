@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Bridge application for connecting web applications to Cosmoid BLE devices",
   "main": "src/main/index.js",
-  "author": "Your Name",
+  "author": "Alexandros Binopoulos",
   "license": "MIT",
   "scripts": {
     "start": "electron .",

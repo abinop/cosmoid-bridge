@@ -27,9 +27,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: |
-          npm install
-          npm run rebuild
+        run: npm install
 
       - name: Build Windows app
         run: npm run package:win
