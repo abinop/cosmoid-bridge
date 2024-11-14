@@ -1,0 +1,28 @@
+{
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "signAndEditExecutable": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Cosmoid Bridge"
+  },
+  "asar": false,
+  "files": [
+    "src/**/*",
+    "assets/**/*",
+    "package.json",
+    "node_modules/**/*"
+  ],
+  "directories": {
+    "buildResources": "assets"
+  }
+} 

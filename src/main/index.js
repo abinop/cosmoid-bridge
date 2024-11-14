@@ -1,10 +1,8 @@
 // src/main/index.js
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
-const Store = require('electron-store');
-const AutoLaunch = require('auto-launch');
-const { BLEServer } = require('./ble-server');
-const { WSServer } = require('./ws-server');
+const WebSocket = require('ws');
+const ble = require('./ble');
 
 let mainWindow;
 let tray;
