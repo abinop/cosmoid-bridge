@@ -47,7 +47,11 @@ class BLEManager {
         $devices = Get-PnpDevice | Where-Object {
           $_.Class -eq "Bluetooth" -and 
           $_.Status -eq "OK" -and 
-          $_.Present -eq $true
+          $_.Present -eq $true -and
+          $_.FriendlyName -notlike "*Transport*" -and
+          $_.FriendlyName -notlike "*Enumerator*" -and
+          $_.FriendlyName -notlike "*Service*" -and
+          $_.Description -like "*LE*"
         }
         $devices | ConvertTo-Json
       `);
@@ -58,10 +62,10 @@ class BLEManager {
       if (Array.isArray(devices)) {
         devices.forEach(device => {
           this.log('Processing device', device);
-          if (device.DeviceID) {
+          if (device.DeviceID && device.FriendlyName) {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
-              name: device.FriendlyName || 'Unknown Device',
+              name: device.FriendlyName,
               address: device.DeviceID.split('\\').pop(),
               connected: device.Status === 'OK'
             });
