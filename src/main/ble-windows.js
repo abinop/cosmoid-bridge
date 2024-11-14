@@ -45,17 +45,21 @@ class BLEManager {
     try {
       const result = await this.runPowerShell(`
         $devices = @(Get-PnpDevice | Where-Object { 
-          ($_.Class -eq "Bluetooth" -or $_.Class -eq "BTHLEDevice") -and 
-          $_.Status -eq "OK" -and 
-          $_.Present -eq $true -and
-          ($_.Service -eq "BthLEEnum" -or $_.Service -eq "BTHLE" -or $_.Service -eq "BTHLEDevice")
+          ($_.Class -eq "BTHLEDevice" -or $_.Class -eq "Bluetooth") -and 
+          $_.Present -eq $true
         } | ForEach-Object {
           $device = $_
           $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
           $deviceInfo = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
           
+          # Get additional BLE properties
+          $bleInfo = Get-PnpDeviceProperty -InstanceId $device.InstanceId -ErrorAction SilentlyContinue | 
+            Where-Object { $_.KeyName -match 'DEVPKEY_Device|DEVPKEY_Bluetooth' } |
+            ForEach-Object { @{$_.KeyName = $_.Data} }
+          
           @{
             DeviceID = $device.DeviceID
+            Class = $device.Class
             FriendlyName = $device.FriendlyName
             Description = $device.Description
             Manufacturer = $device.Manufacturer
@@ -63,6 +67,7 @@ class BLEManager {
             Status = $device.Status
             ContainerId = $deviceInfo.ContainerId
             HardwareIds = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
+            Properties = $bleInfo
           }
         })
         if ($devices.Count -eq 0) {
@@ -82,20 +87,37 @@ class BLEManager {
       const devices = JSON.parse(result || '[]');
       const deviceArray = Array.isArray(devices) ? devices : [devices];
       
+      // Log all devices with detailed information
       deviceArray.forEach(device => {
-        this.log('Found device', device);
-        if (device.DeviceID && !device.FriendlyName?.includes("Enumerator")) {
+        this.log('Discovered Device Details', {
+          id: device.DeviceID,
+          class: device.Class,
+          name: device.FriendlyName,
+          description: device.Description,
+          manufacturer: device.Manufacturer,
+          service: device.Service,
+          status: device.Status,
+          hardwareIds: device.HardwareIds,
+          properties: device.Properties
+        });
+
+        // Store all devices for now
+        if (device.DeviceID && device.Status === 'OK') {
           this.devices.set(device.DeviceID, {
             id: device.DeviceID,
             name: device.FriendlyName || 'Unknown Device',
             address: device.DeviceID.split('\\').pop(),
             connected: device.Status === 'OK',
-            hardwareIds: device.HardwareIds || []
+            class: device.Class,
+            hardwareIds: device.HardwareIds || [],
+            manufacturer: device.Manufacturer,
+            description: device.Description,
+            properties: device.Properties
           });
         }
       });
 
-      this.log('Final devices list', Array.from(this.devices.values()));
+      this.log('All discovered devices', Array.from(this.devices.values()));
     } catch (error) {
       this.log('Scanning error', error.toString());
       this.log('Scanning error stack', error.stack);
