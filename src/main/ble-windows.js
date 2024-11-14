@@ -1,5 +1,4 @@
 const { exec } = require('child_process');
-const path = require('path');
 
 class BLEManager {
   constructor() {
@@ -10,7 +9,7 @@ class BLEManager {
   async initialize() {
     try {
       const btStatus = await this.runPowerShell(`
-        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth"}
+        $radio = Get-PnpDevice | Where-Object {$_.Class -eq "Bluetooth" -and $_.FriendlyName -like "*Radio*"}
         if ($radio.Status -eq 'OK') { Write-Output 'enabled' } else { Write-Output 'disabled' }
       `);
 
@@ -31,28 +30,21 @@ class BLEManager {
     this.isScanning = true;
     try {
       const result = await this.runPowerShell(`
-        $devices = Get-PnpDevice | Where-Object {
-          $_.Name -like "*Cosmo*" -and 
-          $_.Class -eq "Bluetooth" -and 
-          $_.Status -eq "OK" -and 
-          $_.Present -eq $true
-        }
-        
-        $deviceList = @()
-        foreach ($device in $devices) {
-          $batteryInfo = Get-WmiObject -Class Win32_Battery | Where-Object { $_.Name -like "*$($device.FriendlyName)*" }
-          $batteryLevel = if ($batteryInfo) { $batteryInfo.EstimatedChargeRemaining } else { 0 }
-          
-          $deviceInfo = @{
-            DeviceID = $device.DeviceID
-            Name = $device.FriendlyName
-            Status = $device.Status
-            Battery = $batteryLevel
+        $bluetoothRegistryPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices"
+        if (Test-Path $bluetoothRegistryPath) {
+          Get-ChildItem $bluetoothRegistryPath | ForEach-Object {
+            $devicePath = $_.PSPath
+            $deviceName = (Get-ItemProperty $devicePath).Name
+            if ($deviceName -like "*Cosmo*") {
+              @{
+                DeviceID = $_.PSChildName
+                Name = $deviceName
+                Status = "OK"
+                Battery = 100  # Placeholder since we can't get real battery info this way
+              }
+            }
           }
-          $deviceList += $deviceInfo
-        }
-        
-        ConvertTo-Json -InputObject $deviceList
+        } | ConvertTo-Json
       `);
 
       const devices = JSON.parse(result || '[]');
@@ -62,7 +54,7 @@ class BLEManager {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
               name: device.Name || 'Unknown Cosmo Device',
-              address: device.DeviceID.split('\\').pop(),
+              address: device.DeviceID,
               connected: device.Status === 'OK',
               battery: device.Battery
             });
@@ -86,7 +78,7 @@ class BLEManager {
 
   runPowerShell(script) {
     return new Promise((resolve, reject) => {
-      const ps = exec('powershell.exe -NoProfile -NonInteractive -Command -', 
+      exec('powershell.exe -NoProfile -NonInteractive -Command -', 
         { shell: true }, 
         (error, stdout, stderr) => {
           if (error) {
@@ -98,10 +90,7 @@ class BLEManager {
             console.error('PowerShell stderr:', stderr);
           }
           resolve(stdout);
-        });
-
-      ps.stdin.write(script);
-      ps.stdin.end();
+        }).stdin.end(script);
     });
   }
 }
