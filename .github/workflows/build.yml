@@ -2,9 +2,15 @@ name: Build
 
 on: 
   push:
-    branches: [ main, master ]
+    branches: 
+      - main
+      - master
+      - feature/ab/2411/winver
   pull_request:
-    branches: [ main, master ]
+    branches: 
+      - main
+      - master
+      - feature/ab/2411/winver
 
 jobs:
   build_windows:
