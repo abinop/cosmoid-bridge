@@ -44,14 +44,31 @@ class BLEManager {
     this.isScanning = true;
     try {
       const result = await this.runPowerShell(`
-        $devices = @(Get-PnpDevice -Class Bluetooth -PresentOnly | Where-Object { 
+        $devices = @(Get-PnpDevice | Where-Object { 
+          ($_.Class -eq "Bluetooth" -or $_.Class -eq "BTHLEDevice") -and 
           $_.Status -eq "OK" -and 
-          ($_.Service -eq "BthLEEnum" -or $_.Service -eq "BTHLE")
-        } | Select-Object DeviceID, FriendlyName, Description, Manufacturer, Service, Status)
+          $_.Present -eq $true -and
+          ($_.Service -eq "BthLEEnum" -or $_.Service -eq "BTHLE" -or $_.Service -eq "BTHLEDevice")
+        } | ForEach-Object {
+          $device = $_
+          $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
+          $deviceInfo = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
+          
+          @{
+            DeviceID = $device.DeviceID
+            FriendlyName = $device.FriendlyName
+            Description = $device.Description
+            Manufacturer = $device.Manufacturer
+            Service = $device.Service
+            Status = $device.Status
+            ContainerId = $deviceInfo.ContainerId
+            HardwareIds = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
+          }
+        })
         if ($devices.Count -eq 0) {
           Write-Output "No BLE devices found"
         } else {
-          $devices | ConvertTo-Json
+          $devices | ConvertTo-Json -Depth 10
         }
       `);
 
@@ -67,12 +84,13 @@ class BLEManager {
       
       deviceArray.forEach(device => {
         this.log('Found device', device);
-        if (device.DeviceID) {
+        if (device.DeviceID && !device.FriendlyName?.includes("Enumerator")) {
           this.devices.set(device.DeviceID, {
             id: device.DeviceID,
             name: device.FriendlyName || 'Unknown Device',
             address: device.DeviceID.split('\\').pop(),
-            connected: device.Status === 'OK'
+            connected: device.Status === 'OK',
+            hardwareIds: device.HardwareIds || []
           });
         }
       });
