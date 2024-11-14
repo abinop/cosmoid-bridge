@@ -1,9 +1,24 @@
 const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 class BLEManager {
   constructor() {
     this.devices = new Map();
     this.isScanning = false;
+    this.logPath = path.join(process.env.APPDATA, 'Cosmoid Bridge', 'debug.log');
+    
+    // Ensure log directory exists
+    const logDir = path.dirname(this.logPath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+  }
+
+  log(message, data) {
+    const timestamp = new Date().toISOString();
+    const logMessage = `${timestamp} - ${message}: ${JSON.stringify(data)}\n`;
+    fs.appendFileSync(this.logPath, logMessage);
   }
 
   async initialize() {
@@ -30,39 +45,47 @@ class BLEManager {
     this.isScanning = true;
     try {
       const result = await this.runPowerShell(`
-        $bluetoothRegistryPath = "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices"
-        if (Test-Path $bluetoothRegistryPath) {
-          Get-ChildItem $bluetoothRegistryPath | ForEach-Object {
-            $devicePath = $_.PSPath
-            $deviceName = (Get-ItemProperty $devicePath).Name
-            if ($deviceName -like "*Cosmo*") {
-              @{
-                DeviceID = $_.PSChildName
-                Name = $deviceName
-                Status = "OK"
-                Battery = 100  # Placeholder since we can't get real battery info this way
-              }
-            }
-          }
-        } | ConvertTo-Json
+        $devices = Get-PnpDevice | Where-Object {
+          $_.Class -eq "Bluetooth" -and 
+          $_.Status -eq "OK"
+        } | Select-Object DeviceID, FriendlyName, Class, Status, Manufacturer, HardwareID
+
+        $devices | ForEach-Object {
+          $_ | Add-Member -MemberType NoteProperty -Name "Details" -Value ($_.HardwareID -join "; ")
+        }
+
+        $devices | ConvertTo-Json -Depth 10
       `);
+
+      this.log('All discovered devices', result);
 
       const devices = JSON.parse(result || '[]');
       if (Array.isArray(devices)) {
         devices.forEach(device => {
-          if (device.DeviceID) {
+          this.log('Device details', {
+            name: device.FriendlyName,
+            manufacturer: device.Manufacturer,
+            details: device.Details
+          });
+
+          if (device.FriendlyName && (
+              device.FriendlyName.includes('Cosmo') || 
+              device.Manufacturer?.includes('Filisia') ||
+              device.Details?.includes('Cosmo')
+          )) {
             this.devices.set(device.DeviceID, {
               id: device.DeviceID,
-              name: device.Name || 'Unknown Cosmo Device',
-              address: device.DeviceID,
+              name: device.FriendlyName,
+              manufacturer: device.Manufacturer,
+              details: device.Details,
               connected: device.Status === 'OK',
-              battery: device.Battery
+              battery: 100
             });
           }
         });
       }
     } catch (error) {
-      console.error('Scanning error:', error);
+      this.log('Scanning error', error);
     } finally {
       this.isScanning = false;
     }
