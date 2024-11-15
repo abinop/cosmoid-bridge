@@ -8,15 +8,14 @@ class WSServer {
 
     // Bind event handlers
     this.handleConnection = this.handleConnection.bind(this);
-    this.handleDeviceConnected = this.handleDeviceConnected.bind(this);
+    this.handleDeviceUpdate = this.handleDeviceUpdate.bind(this);
     this.handleDeviceDisconnected = this.handleDeviceDisconnected.bind(this);
-    this.handlePropertyUpdate = this.handlePropertyUpdate.bind(this);
     this.handleButtonEvent = this.handleButtonEvent.bind(this);
 
     // Register BLE event handlers
-    this.bleManager.on('deviceConnected', this.handleDeviceConnected);
+    this.bleManager.on('deviceConnected', this.handleDeviceUpdate);
     this.bleManager.on('deviceDisconnected', this.handleDeviceDisconnected);
-    this.bleManager.on('propertyUpdate', this.handlePropertyUpdate);
+    this.bleManager.on('deviceUpdate', this.handleDeviceUpdate);
     this.bleManager.on('buttonEvent', this.handleButtonEvent);
   }
 
@@ -42,21 +41,19 @@ class WSServer {
     const devices = Array.from(this.bleManager.devices.values()).map(device => ({
       id: device.id,
       name: device.name,
-      properties: {
-        serial: device.serial,
-        firmware: device.firmware,
-        battery: device.batteryLevel,
-        sensor: device.sensorValue,
-        pressValue: device.pressValue,
-        buttonState: device.buttonState,
-        rssi: device.rssi
-      },
+      serial: device.serial,
+      firmware: device.firmware,
+      batteryLevel: device.batteryLevel,
+      sensorValue: device.sensorValue,
+      buttonState: device.buttonState,
+      pressValue: device.pressValue,
+      rssi: device.rssi,
       connected: device.connected
     }));
 
     ws.send(JSON.stringify({
-      type: 'devicesList',
-      devices: devices
+      type: 'deviceList',
+      devices
     }));
 
     ws.on('message', async (message) => {
@@ -78,14 +75,20 @@ class WSServer {
     });
   }
 
-  handleDeviceConnected(device) {
+  handleDeviceUpdate(device) {
     this.broadcast({
-      type: 'deviceConnected',
+      type: 'deviceUpdate',
       device: {
         id: device.id,
         name: device.name,
-        properties: device.properties,
-        connected: true
+        serial: device.serial,
+        firmware: device.firmware,
+        batteryLevel: device.batteryLevel,
+        sensorValue: device.sensorValue,
+        buttonState: device.buttonState,
+        pressValue: device.pressValue,
+        rssi: device.rssi,
+        connected: device.connected
       }
     });
   }
@@ -97,14 +100,6 @@ class WSServer {
         id: device.id,
         name: device.name
       }
-    });
-  }
-
-  handlePropertyUpdate(update) {
-    this.broadcast({
-      type: 'propertyUpdate',
-      deviceId: update.deviceId,
-      properties: update.properties
     });
   }
 

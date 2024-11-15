@@ -95,12 +95,18 @@ class BLEManager extends EventEmitter {
 
     try {
       const device = {
+        id: peripheral.uuid,
         name: peripheral.advertisement.localName,
-        uuid: peripheral.uuid,
         peripheral,
         connected: false,
         connecting: true,
-        properties: {}
+        serial: null,
+        firmware: null,
+        batteryLevel: null,
+        sensorValue: 0,
+        buttonState: false,
+        pressValue: 0,
+        rssi: peripheral.rssi
       };
       this.devices.set(peripheral.uuid, device);
 
@@ -124,14 +130,9 @@ class BLEManager extends EventEmitter {
         this.readCharacteristicAsync(batteryChars, '2a19')
       ]);
 
-      device.properties = {
-        serial: serial?.toString(),
-        firmware: firmware?.toString(),
-        battery: battery ? parseInt(battery.toString()) : null,
-        buttonState: false,
-        pressValue: 0,
-        rssi: peripheral.rssi
-      };
+      device.serial = serial?.toString();
+      device.firmware = firmware?.toString();
+      device.batteryLevel = battery ? parseInt(battery.toString()) : null;
 
       // Subscribe to button and sensor characteristics
       await Promise.all([
@@ -143,11 +144,8 @@ class BLEManager extends EventEmitter {
         })
       ]);
 
-      this.emit('deviceConnected', {
-        id: peripheral.uuid,
-        name: device.name,
-        properties: device.properties
-      });
+      this.emit('deviceConnected', device);
+      this.emit('deviceUpdate', device);
 
     } catch (error) {
       this.log('Error connecting to device', {
@@ -234,8 +232,8 @@ class BLEManager extends EventEmitter {
     const buttonState = data[0] === 1;
     const pressValue = data[1] || 0;
 
-    device.properties.buttonState = buttonState;
-    device.properties.pressValue = pressValue;
+    device.buttonState = buttonState;
+    device.pressValue = pressValue;
 
     this.emit('buttonEvent', {
       deviceId,
@@ -243,10 +241,7 @@ class BLEManager extends EventEmitter {
       value: pressValue
     });
 
-    this.emit('propertyUpdate', {
-      deviceId,
-      properties: device.properties
-    });
+    this.emit('deviceUpdate', device);
   }
 
   handleSensorData(deviceId, data) {
@@ -254,12 +249,9 @@ class BLEManager extends EventEmitter {
     if (!device) return;
 
     const sensorValue = data.readUInt16LE(0);
-    device.properties.sensor = sensorValue;
+    device.sensorValue = sensorValue;
 
-    this.emit('propertyUpdate', {
-      deviceId,
-      properties: device.properties
-    });
+    this.emit('deviceUpdate', device);
   }
 
   async handleDeviceDisconnection(uuid) {
@@ -306,14 +298,13 @@ class BLEManager extends EventEmitter {
       firmware: device.firmware,
       batteryLevel: device.batteryLevel,
       sensorValue: device.sensorValue,
-      pressValue: device.pressValue,
       buttonState: device.buttonState,
+      pressValue: device.pressValue,
       rssi: device.rssi,
       connected: device.connected
     }));
-    
     this.log('Emitting all devices', devices);
-    global.mainWindow?.webContents.send('deviceList', devices);
+    this.emit('deviceList', devices);
   }
 
   log(message, data) {
