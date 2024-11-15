@@ -1,6 +1,7 @@
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const noble = require('@abandonware/noble');
 
 class BLEManager {
   constructor() {
@@ -24,7 +25,86 @@ class BLEManager {
       fs.mkdirSync(logDir, { recursive: true });
     }
 
+    this.setupNoble();
     this.log('BLEManager', 'Initialized');
+  }
+
+  setupNoble() {
+    noble.on('stateChange', (state) => {
+      this.log('Bluetooth state changed', state);
+      if (state === 'poweredOn' && this.isScanning) {
+        this.startActualScan();
+      }
+    });
+
+    noble.on('discover', async (peripheral) => {
+      this.log('Device found', {
+        name: peripheral.advertisement.localName,
+        uuid: peripheral.uuid,
+        rssi: peripheral.rssi
+      });
+
+      if (peripheral.advertisement.localName?.includes('Cosmo')) {
+        this.log('Cosmo device found', peripheral.advertisement.localName);
+        
+        try {
+          // Connect to the device
+          await peripheral.connectAsync();
+          this.log('Connected to device', peripheral.uuid);
+
+          // Discover services
+          const { services } = await peripheral.discoverServicesAsync([this.COSMO_SERVICE_UUID]);
+          this.log('Discovered services', services.map(s => s.uuid));
+
+          for (const service of services) {
+            if (service.uuid === this.COSMO_SERVICE_UUID) {
+              // Discover characteristics
+              const { characteristics } = await service.discoverCharacteristicsAsync([
+                this.SENSOR_CHARACTERISTIC_UUID,
+                this.BUTTON_STATUS_CHARACTERISTIC_UUID,
+                this.COMMAND_CHARACTERISTIC_UUID
+              ]);
+
+              this.log('Discovered characteristics', characteristics.map(c => c.uuid));
+
+              // Store device info
+              this.devices.set(peripheral.uuid, {
+                peripheral,
+                service,
+                characteristics: characteristics.reduce((acc, char) => {
+                  acc[char.uuid] = char;
+                  return acc;
+                }, {})
+              });
+
+              // Subscribe to notifications
+              for (const char of characteristics) {
+                if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
+                    char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                  await char.subscribeAsync();
+                  char.on('data', (data) => {
+                    this.log(`Characteristic ${char.uuid} value changed`, data);
+                    if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
+                      const sensorValue = data.readUInt8(0);
+                      this.log('Sensor value', sensorValue);
+                    } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                      const buttonState = data.readUInt8(0);
+                      const forceValue = data.readUInt8(1);
+                      this.log('Button status', { buttonState, forceValue });
+                    }
+                  });
+                }
+              }
+            }
+          }
+        } catch (error) {
+          this.log('Error connecting to device', {
+            error: error.toString(),
+            stack: error.stack
+          });
+        }
+      }
+    });
   }
 
   log(message, data) {
@@ -32,6 +112,19 @@ class BLEManager {
     let logMessage = `${timestamp} - ${message}: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}\n`;
     console.log(logMessage);
     fs.appendFileSync(this.logPath, logMessage);
+  }
+
+  startActualScan() {
+    noble.startScanningAsync([this.COSMO_SERVICE_UUID], false)
+      .then(() => {
+        this.log('Scanning started', null);
+      })
+      .catch((error) => {
+        this.log('Error starting scan', {
+          error: error.toString(),
+          stack: error.stack
+        });
+      });
   }
 
   async startScanning() {
@@ -44,70 +137,31 @@ class BLEManager {
     this.devices.clear();
 
     try {
-      // Request Bluetooth device with Cosmo service UUID
-      const device = await navigator.bluetooth.requestDevice({
-        filters: [
-          { namePrefix: 'Cosmo' },
-          { services: [this.COSMO_SERVICE_UUID] }
-        ],
-        optionalServices: [
-          this.DEVICE_INFO_SERVICE_UUID,
-          '0000180f-0000-1000-8000-00805f9b34fb' // Battery Service
-        ]
-      });
-
-      this.log('Device found', device.name);
-      
-      // Connect to the device
-      const server = await device.gatt.connect();
-      this.log('Connected to GATT server', server);
-
-      // Get Cosmo service
-      const cosmoService = await server.getPrimaryService(this.COSMO_SERVICE_UUID);
-      this.log('Got Cosmo service', cosmoService);
-
-      // Get and subscribe to sensor characteristic
-      const sensorChar = await cosmoService.getCharacteristic(this.SENSOR_CHARACTERISTIC_UUID);
-      await sensorChar.startNotifications();
-      sensorChar.addEventListener('characteristicvaluechanged', (event) => {
-        const value = event.target.value;
-        const sensorValue = value.getUint8(0);
-        this.log('Sensor value changed', sensorValue);
-        // Emit event or callback here
-      });
-
-      // Get and subscribe to button status
-      const buttonChar = await cosmoService.getCharacteristic(this.BUTTON_STATUS_CHARACTERISTIC_UUID);
-      await buttonChar.startNotifications();
-      buttonChar.addEventListener('characteristicvaluechanged', (event) => {
-        const value = event.target.value;
-        const buttonState = value.getUint8(0);
-        const forceValue = value.getUint8(1);
-        this.log('Button status changed', { buttonState, forceValue });
-        // Emit event or callback here
-      });
-
-      // Store device info
-      this.devices.set(device.id, {
-        device,
-        server,
-        service: cosmoService,
-        sensorChar,
-        buttonChar
-      });
-
+      if (noble.state === 'poweredOn') {
+        await this.startActualScan();
+      } else {
+        this.log('Bluetooth not powered on', noble.state);
+      }
     } catch (error) {
-      this.log('Error scanning', error);
+      this.log('Error scanning', {
+        error: error.toString(),
+        stack: error.stack
+      });
       throw error;
-    } finally {
-      this.isScanning = false;
     }
   }
 
   async stopScanning() {
     this.isScanning = false;
-    // Web Bluetooth API handles cleanup automatically
-    this.log('Stopped scanning', null);
+    try {
+      await noble.stopScanningAsync();
+      this.log('Stopped scanning', null);
+    } catch (error) {
+      this.log('Error stopping scan', {
+        error: error.toString(),
+        stack: error.stack
+      });
+    }
   }
 
   async setColor(deviceId, r, g, b, mode = 1) {
@@ -117,12 +171,19 @@ class BLEManager {
     }
 
     try {
-      const commandChar = await deviceInfo.service.getCharacteristic(this.COMMAND_CHARACTERISTIC_UUID);
-      const command = new Uint8Array([2, r, g, b, mode]); // 2 is SET_COLOR command
-      await commandChar.writeValue(command);
+      const commandChar = deviceInfo.characteristics[this.COMMAND_CHARACTERISTIC_UUID];
+      if (!commandChar) {
+        throw new Error('Command characteristic not found');
+      }
+
+      const command = Buffer.from([2, r, g, b, mode]); // 2 is SET_COLOR command
+      await commandChar.writeAsync(command, true);
       this.log('Color set', { r, g, b, mode });
     } catch (error) {
-      this.log('Error setting color', error);
+      this.log('Error setting color', {
+        error: error.toString(),
+        stack: error.stack
+      });
       throw error;
     }
   }
@@ -134,12 +195,19 @@ class BLEManager {
     }
 
     try {
-      const commandChar = await deviceInfo.service.getCharacteristic(this.COMMAND_CHARACTERISTIC_UUID);
-      const command = new Uint8Array([1, intensity, delay]); // 1 is SET_LUMINOSITY command
-      await commandChar.writeValue(command);
+      const commandChar = deviceInfo.characteristics[this.COMMAND_CHARACTERISTIC_UUID];
+      if (!commandChar) {
+        throw new Error('Command characteristic not found');
+      }
+
+      const command = Buffer.from([1, intensity, delay]); // 1 is SET_LUMINOSITY command
+      await commandChar.writeAsync(command, true);
       this.log('Brightness set', { intensity, delay });
     } catch (error) {
-      this.log('Error setting brightness', error);
+      this.log('Error setting brightness', {
+        error: error.toString(),
+        stack: error.stack
+      });
       throw error;
     }
   }
