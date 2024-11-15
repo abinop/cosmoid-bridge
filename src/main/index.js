@@ -35,23 +35,51 @@ function createWindow() {
     autoLauncher.enable();
   }
 
+  // Create BLE Manager instance
+  const BLEManagerInstance = new BLEWindowsManager();
+  const wsServerInstance = new WSServer(BLEManagerInstance);
+
   // Forward BLE events to renderer
-  BLEManager.on('deviceUpdate', (device) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('deviceUpdate', device);
-    }
+  BLEManagerInstance.on('deviceUpdate', (device) => {
+    if (!device) return;
+    mainWindow?.webContents.send('deviceUpdate', {
+      id: device.id,
+      name: device.name,
+      serial: device.serial,
+      firmware: device.firmware,
+      batteryLevel: device.batteryLevel,
+      sensorValue: device.sensorValue,
+      buttonState: device.buttonState,
+      pressValue: device.pressValue,
+      rssi: device.rssi,
+      connected: device.connected
+    });
   });
 
-  BLEManager.on('deviceConnected', (device) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('deviceConnected', device);
-    }
+  BLEManagerInstance.on('deviceConnected', (device) => {
+    mainWindow?.webContents.send('deviceConnected', {
+      id: device.id,
+      name: device.name,
+      serial: device.serial,
+      firmware: device.firmware,
+      batteryLevel: device.batteryLevel,
+      sensorValue: device.sensorValue,
+      buttonState: device.buttonState,
+      pressValue: device.pressValue,
+      rssi: device.rssi,
+      connected: true
+    });
   });
 
-  BLEManager.on('deviceDisconnected', (device) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('deviceDisconnected', device);
-    }
+  BLEManagerInstance.on('deviceDisconnected', (device) => {
+    mainWindow?.webContents.send('deviceDisconnected', {
+      id: device.id,
+      name: device.name
+    });
+  });
+
+  BLEManagerInstance.on('deviceList', (devices) => {
+    mainWindow?.webContents.send('deviceList', devices);
   });
 
   // Start BLE scanning when window is ready
@@ -146,6 +174,10 @@ ipcMain.on('stopScanning', async (event) => {
       error: error.toString()
     });
   }
+});
+
+ipcMain.on('getDevices', (event) => {
+  BLEManager.emitAllDevices();
 });
 
 // App lifecycle

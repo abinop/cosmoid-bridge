@@ -16,62 +16,73 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.send('hide-window');
   });
 
-  // Handle device updates from IPC
+  // Device handling
+  const devices = new Map();
+
   ipcRenderer.on('deviceUpdate', (event, device) => {
-    console.log('Device update received:', device);
-    updateDeviceInList(device);
+    if (!device || !device.id) return;
+    devices.set(device.id, device);
+    updateDeviceList();
   });
 
-  ipcRenderer.on('deviceList', (event, devices) => {
-    console.log('Device list received:', devices);
-    updateDevicesList(devices);
+  ipcRenderer.on('deviceConnected', (event, device) => {
+    if (!device || !device.id) return;
+    devices.set(device.id, device);
+    updateDeviceList();
   });
+
+  ipcRenderer.on('deviceDisconnected', (event, device) => {
+    if (!device || !device.id) return;
+    devices.delete(device.id);
+    updateDeviceList();
+  });
+
+  ipcRenderer.on('deviceList', (event, deviceList) => {
+    devices.clear();
+    deviceList.forEach(device => {
+      if (device && device.id) {
+        devices.set(device.id, device);
+      }
+    });
+    updateDeviceList();
+  });
+
+  function updateDeviceList() {
+    const deviceListEl = document.getElementById('devicesList');
+    deviceListEl.innerHTML = '';
+
+    devices.forEach(device => {
+      const deviceEl = document.createElement('div');
+      deviceEl.className = 'device';
+      deviceEl.innerHTML = `
+        <div class="device-header">
+          <span class="device-name">${device.name || 'Unknown Device'}</span>
+          <span class="device-status ${device.connected ? 'connected' : 'disconnected'}">
+            ${device.connected ? 'Connected' : 'Disconnected'}
+          </span>
+        </div>
+        <div class="device-info">
+          <div>Serial: ${device.serial || 'N/A'}</div>
+          <div>Firmware: ${device.firmware || 'N/A'}</div>
+          <div>Battery: ${device.batteryLevel !== null ? device.batteryLevel + '%' : 'N/A'}</div>
+          <div>Sensor: ${device.sensorValue !== undefined ? device.sensorValue : 'N/A'}</div>
+          <div>Button: ${device.buttonState ? 'Pressed' : 'Released'}</div>
+          <div>Press Value: ${device.pressValue !== undefined ? device.pressValue : 'N/A'}</div>
+          <div>RSSI: ${device.rssi !== undefined ? device.rssi + ' dBm' : 'N/A'}</div>
+        </div>
+        <div class="device-controls">
+          ${device.connected ? `
+            <button class="button" onclick="window.setRandomLuminosity('${device.id}')">Random Brightness</button>
+            <button class="button" onclick="window.setRandomColor('${device.id}')">Random Color</button>
+          ` : ''}
+        </div>
+      `;
+      deviceListEl.appendChild(deviceEl);
+    });
+  }
 
   // Request initial device list
-  ipcRenderer.send('requestDevices');
-
-  function updateDeviceInList(device) {
-    let deviceElement = document.querySelector(`[data-device-id="${device.id}"]`);
-    
-    if (!device.connected && deviceElement) {
-      deviceElement.remove();
-      return;
-    }
-
-    const deviceHtml = `
-      <div class="device-info-container">
-        <span class="status-indicator ${device.connected ? 'connected' : ''}">${device.connected ? '🟢' : '⚪️'}</span>
-        <span class="device-name">${device.name || 'Unknown Device'}</span>
-        ${device.serial ? `<span class="device-info">Serial: ${device.serial}</span>` : ''}
-        ${device.firmware ? `<span class="device-info">Firmware: ${device.firmware}</span>` : ''}
-        ${device.batteryLevel !== null ? `<span class="device-info">Battery: ${device.batteryLevel}%</span>` : ''}
-        ${device.sensorValue !== undefined ? `<span class="device-info">Sensor: ${device.sensorValue}</span>` : ''}
-        ${device.pressValue !== undefined ? `<span class="device-info">Press: ${device.pressValue}</span>` : ''}
-      </div>
-      <div class="device-controls">
-        ${device.connected ? `
-          <button class="button" onclick="window.setRandomLuminosity('${device.id}')">Random Brightness</button>
-          <button class="button" onclick="window.setRandomColor('${device.id}')">Random Color</button>
-        ` : ''}
-      </div>
-    `;
-
-    if (deviceElement) {
-      deviceElement.innerHTML = deviceHtml;
-    } else {
-      deviceElement = document.createElement('div');
-      deviceElement.className = 'device-item';
-      deviceElement.setAttribute('data-device-id', device.id);
-      deviceElement.innerHTML = deviceHtml;
-      devicesList.appendChild(deviceElement);
-    }
-  }
-
-  function updateDevicesList(devices) {
-    console.log('Updating devices list:', devices);
-    devicesList.innerHTML = '';
-    devices.forEach(device => updateDeviceInList(device));
-  }
+  ipcRenderer.send('getDevices');
 
   // Make functions available to onclick handlers
   window.setRandomLuminosity = (deviceId) => {
