@@ -53,19 +53,20 @@ class BLEManager {
           this.log('Connected to device', peripheral.uuid);
 
           // Discover services
-          const { services } = await peripheral.discoverServicesAsync([this.COSMO_SERVICE_UUID]);
-          this.log('Discovered services', services.map(s => s.uuid));
+          const services = await peripheral.discoverServicesAsync([this.COSMO_SERVICE_UUID]);
+          this.log('Discovered services count', services.length);
 
           for (const service of services) {
+            this.log('Processing service', service.uuid);
             if (service.uuid === this.COSMO_SERVICE_UUID) {
               // Discover characteristics
-              const { characteristics } = await service.discoverCharacteristicsAsync([
+              const characteristics = await service.discoverCharacteristicsAsync([
                 this.SENSOR_CHARACTERISTIC_UUID,
                 this.BUTTON_STATUS_CHARACTERISTIC_UUID,
                 this.COMMAND_CHARACTERISTIC_UUID
               ]);
 
-              this.log('Discovered characteristics', characteristics.map(c => c.uuid));
+              this.log('Discovered characteristics count', characteristics.length);
 
               // Store device info
               this.devices.set(peripheral.uuid, {
@@ -79,20 +80,31 @@ class BLEManager {
 
               // Subscribe to notifications
               for (const char of characteristics) {
+                this.log('Processing characteristic', char.uuid);
                 if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
                     char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                  await char.subscribeAsync();
-                  char.on('data', (data) => {
-                    this.log(`Characteristic ${char.uuid} value changed`, data);
-                    if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
-                      const sensorValue = data.readUInt8(0);
-                      this.log('Sensor value', sensorValue);
-                    } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                      const buttonState = data.readUInt8(0);
-                      const forceValue = data.readUInt8(1);
-                      this.log('Button status', { buttonState, forceValue });
-                    }
-                  });
+                  try {
+                    await char.subscribeAsync();
+                    this.log('Subscribed to characteristic', char.uuid);
+                    
+                    char.on('data', (data) => {
+                      this.log(`Characteristic ${char.uuid} value changed`, data);
+                      if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
+                        const sensorValue = data.readUInt8(0);
+                        this.log('Sensor value', sensorValue);
+                      } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                        const buttonState = data.readUInt8(0);
+                        const forceValue = data.readUInt8(1);
+                        this.log('Button status', { buttonState, forceValue });
+                      }
+                    });
+                  } catch (subError) {
+                    this.log('Error subscribing to characteristic', {
+                      uuid: char.uuid,
+                      error: subError.toString(),
+                      stack: subError.stack
+                    });
+                  }
                 }
               }
             }
