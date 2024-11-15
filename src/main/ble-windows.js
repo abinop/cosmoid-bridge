@@ -112,18 +112,16 @@ class BLEManager extends EventEmitter {
       const services = await this.discoverServicesAsync(peripheral);
       this.log('Services discovered', services);
 
-      // Discover all characteristics in parallel
-      const [deviceInfoChars, batteryChars, cosmoChars] = await Promise.all([
-        this.discoverCharacteristicsAsync(peripheral, this.DEVICE_INFO_SERVICE_UUID),
-        this.discoverCharacteristicsAsync(peripheral, this.BATTERY_SERVICE_UUID),
-        this.discoverCharacteristicsAsync(peripheral, this.COSMO_SERVICE_UUID)
-      ]);
+      // Discover characteristics for each service
+      const deviceInfoChars = await this.discoverCharacteristicsAsync(peripheral, '180a');
+      const batteryChars = await this.discoverCharacteristicsAsync(peripheral, '180f');
+      const cosmoChars = await this.discoverCharacteristicsAsync(peripheral, this.COSMO_SERVICE_UUID.replace(/-/g, ''));
 
-      // Read static characteristics in parallel
+      // Read static characteristics
       const [serial, firmware, battery] = await Promise.all([
-        this.readCharacteristicAsync(deviceInfoChars, this.SERIAL_CHARACTERISTIC_UUID),
-        this.readCharacteristicAsync(deviceInfoChars, this.FIRMWARE_CHARACTERISTIC_UUID),
-        this.readCharacteristicAsync(batteryChars, this.BATTERY_CHARACTERISTIC_UUID)
+        this.readCharacteristicAsync(deviceInfoChars, '2a25'),
+        this.readCharacteristicAsync(deviceInfoChars, '2a26'),
+        this.readCharacteristicAsync(batteryChars, '2a19')
       ]);
 
       device.properties = {
@@ -137,10 +135,10 @@ class BLEManager extends EventEmitter {
 
       // Subscribe to button and sensor characteristics
       await Promise.all([
-        this.subscribeToCharacteristic(cosmoChars, this.BUTTON_STATUS_CHARACTERISTIC_UUID, (data) => {
+        this.subscribeToCharacteristic(cosmoChars, this.BUTTON_STATUS_CHARACTERISTIC_UUID.replace(/-/g, ''), (data) => {
           this.handleButtonStatus(peripheral.uuid, data);
         }),
-        this.subscribeToCharacteristic(cosmoChars, this.SENSOR_CHARACTERISTIC_UUID, (data) => {
+        this.subscribeToCharacteristic(cosmoChars, this.SENSOR_CHARACTERISTIC_UUID.replace(/-/g, ''), (data) => {
           this.handleSensorData(peripheral.uuid, data);
         })
       ]);
@@ -158,6 +156,74 @@ class BLEManager extends EventEmitter {
         stack: error.stack
       });
       this.handleDeviceDisconnection(peripheral.uuid);
+    }
+  }
+
+  async discoverServicesAsync(peripheral) {
+    try {
+      const services = await peripheral.discoverServicesAsync();
+      return services.map(s => s.uuid);
+    } catch (error) {
+      this.log('Error discovering services', {
+        uuid: peripheral.uuid,
+        error: error.toString(),
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  async discoverCharacteristicsAsync(peripheral, serviceUuid) {
+    try {
+      const services = await peripheral.discoverServicesAsync();
+      const service = services.find(s => s.uuid === serviceUuid);
+      if (!service) {
+        throw new Error(`Service not found: ${serviceUuid}`);
+      }
+      return await service.discoverCharacteristicsAsync();
+    } catch (error) {
+      this.log('Error discovering characteristics', {
+        uuid: peripheral.uuid,
+        service: serviceUuid,
+        error: error.toString(),
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  async readCharacteristicAsync(characteristics, characteristicUuid) {
+    try {
+      const characteristic = characteristics.find(c => c.uuid === characteristicUuid);
+      if (!characteristic) {
+        return null;
+      }
+      return await characteristic.readAsync();
+    } catch (error) {
+      this.log('Error reading characteristic', {
+        uuid: characteristicUuid,
+        error: error.toString(),
+        stack: error.stack
+      });
+      return null;
+    }
+  }
+
+  async subscribeToCharacteristic(characteristics, characteristicUuid, callback) {
+    try {
+      const characteristic = characteristics.find(c => c.uuid === characteristicUuid);
+      if (!characteristic) {
+        this.log('Characteristic not found', characteristicUuid);
+        return;
+      }
+      await characteristic.subscribeAsync();
+      characteristic.on('data', callback);
+    } catch (error) {
+      this.log('Error subscribing to characteristic', {
+        uuid: characteristicUuid,
+        error: error.toString(),
+        stack: error.stack
+      });
     }
   }
 
@@ -194,72 +260,6 @@ class BLEManager extends EventEmitter {
       deviceId,
       properties: device.properties
     });
-  }
-
-  async discoverServicesAsync(peripheral) {
-    try {
-      const services = await peripheral.discoverServicesAsync();
-      return services.map(s => s.uuid);
-    } catch (error) {
-      this.log('Error discovering services', {
-        uuid: peripheral.uuid,
-        error: error.toString(),
-        stack: error.stack
-      });
-      throw error;
-    }
-  }
-
-  async discoverCharacteristicsAsync(peripheral, serviceUuid) {
-    try {
-      const service = await peripheral.getServiceAsync(serviceUuid);
-      const characteristics = await service.discoverCharacteristicsAsync();
-      return characteristics;
-    } catch (error) {
-      this.log('Error discovering characteristics', {
-        uuid: peripheral.uuid,
-        service: serviceUuid,
-        error: error.toString(),
-        stack: error.stack
-      });
-      throw error;
-    }
-  }
-
-  async readCharacteristicAsync(characteristics, characteristicUuid) {
-    try {
-      const characteristic = characteristics.find(c => c.uuid === characteristicUuid);
-      if (!characteristic) {
-        throw new Error(`Characteristic not found: ${characteristicUuid}`);
-      }
-      const data = await characteristic.readAsync();
-      return data;
-    } catch (error) {
-      this.log('Error reading characteristic', {
-        uuid: characteristicUuid,
-        error: error.toString(),
-        stack: error.stack
-      });
-      throw error;
-    }
-  }
-
-  async subscribeToCharacteristic(characteristics, characteristicUuid, callback) {
-    try {
-      const characteristic = characteristics.find(c => c.uuid === characteristicUuid);
-      if (!characteristic) {
-        throw new Error(`Characteristic not found: ${characteristicUuid}`);
-      }
-      await characteristic.subscribeAsync();
-      characteristic.on('data', callback);
-    } catch (error) {
-      this.log('Error subscribing to characteristic', {
-        uuid: characteristicUuid,
-        error: error.toString(),
-        stack: error.stack
-      });
-      throw error;
-    }
   }
 
   async handleDeviceDisconnection(uuid) {
