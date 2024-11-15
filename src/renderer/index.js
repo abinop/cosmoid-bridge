@@ -27,6 +27,21 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDevicesList(devices);
   });
 
+  // Handle device connection events from IPC
+  ipcRenderer.on('deviceConnected', (event, device) => {
+    console.log('Device connected:', device);
+    updateDeviceInList(device);
+  });
+
+  // Handle device disconnection events from IPC 
+  ipcRenderer.on('deviceDisconnected', (event, device) => {
+    console.log('Device disconnected:', device);
+    const deviceElement = document.querySelector(`[data-device-id="${device.id}"]`);
+    if (deviceElement) {
+      deviceElement.remove();
+    }
+  });
+
   // Request initial device list
   ipcRenderer.send('requestDevices');
 
