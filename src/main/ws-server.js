@@ -1,17 +1,36 @@
 const WebSocket = require('ws');
+const path = require('path');
+const fs = require('fs');
 
 class WSServer {
   constructor(bleManager) {
     this.wss = null;
     this.clients = new Set();
     this.bleManager = bleManager;
+    
+    // Set up logging
+    const appDataPath = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : '/var/local');
+    this.logPath = path.join(appDataPath, 'Cosmoid Bridge', 'websocket.log');
+    
+    const logDir = path.dirname(this.logPath);
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    
     this.setupBLEListeners();
+  }
+
+  log(message, data) {
+    const timestamp = new Date().toISOString();
+    let logMessage = `${timestamp} - ${message}: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}\n`;
+    console.log(logMessage);
+    fs.appendFileSync(this.logPath, logMessage);
   }
 
   setupBLEListeners() {
     // Listen for device updates from BLE manager
     this.bleManager.on('deviceUpdate', (device) => {
-      console.log('****BLE->WS: Device update received:', {
+      this.log('****BLE->WS: Device update received:', {
         id: device.id,
         name: device.name,
         connected: device.connected,
@@ -39,7 +58,7 @@ class WSServer {
 
     // Listen for device connection/disconnection
     this.bleManager.on('deviceConnected', (device) => {
-      console.log('****BLE->WS: Device connected:', {
+      this.log('****BLE->WS: Device connected:', {
         id: device.id,
         name: device.name,
         serial: device.serial,
@@ -59,7 +78,7 @@ class WSServer {
     });
 
     this.bleManager.on('deviceDisconnected', (device) => {
-      console.log('****BLE->WS: Device disconnected:', {
+      this.log('****BLE->WS: Device disconnected:', {
         id: device.id,
         name: device.name
       });
@@ -74,7 +93,7 @@ class WSServer {
 
     // Listen for property updates
     this.bleManager.on('propertyUpdate', (data) => {
-      console.log('****BLE->WS: Property update:', {
+      this.log('****BLE->WS: Property update:', {
         deviceId: data.deviceId,
         property: data.property,
         value: data.value
@@ -89,7 +108,7 @@ class WSServer {
 
     // Listen for button/sensor updates
     this.bleManager.on('buttonUpdate', (data) => {
-      console.log('****BLE->WS: Button update:', {
+      this.log('****BLE->WS: Button update:', {
         deviceId: data.deviceId,
         buttonState: data.buttonState,
         pressValue: data.pressValue
@@ -103,7 +122,7 @@ class WSServer {
     });
 
     this.bleManager.on('sensorUpdate', (data) => {
-      console.log('****BLE->WS: Sensor update:', {
+      this.log('****BLE->WS: Sensor update:', {
         deviceId: data.deviceId,
         value: data.value
       });
@@ -120,11 +139,11 @@ class WSServer {
 
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
-      console.log('****WebSocket: New client connected, total clients:', this.clients.size);
+      this.log('****WebSocket: New client connected, total clients:', this.clients.size);
 
       // Send initial device list
       const devices = Array.from(this.bleManager.devices.values()).map(device => {
-        console.log('****WebSocket: Sending initial device data:', {
+        this.log('****WebSocket: Sending initial device data:', {
           id: device.id,
           name: device.name,
           connected: device.connected,
@@ -149,12 +168,12 @@ class WSServer {
       ws.send(JSON.stringify({ type: 'devicesList', devices }));
 
       ws.on('message', async (message) => {
-        console.log('****WebSocket: Received message:', message.toString());
+        this.log('****WebSocket: Received message:', message.toString());
         try {
           const data = JSON.parse(message);
           await this.handleMessage(ws, data);
         } catch (error) {
-          console.error('Error handling message:', error);
+          this.log('Error handling message:', error);
           ws.send(JSON.stringify({
             type: 'error',
             error: error.message
@@ -164,15 +183,15 @@ class WSServer {
 
       ws.on('close', () => {
         this.clients.delete(ws);
-        console.log('****WebSocket: Client disconnected, remaining clients:', this.clients.size);
+        this.log('****WebSocket: Client disconnected, remaining clients:', this.clients.size);
       });
     });
 
-    console.log('****WebSocket: Server started on port 8080');
+    this.log('****WebSocket: Server started on port 8080');
   }
 
   async handleMessage(ws, message) {
-    console.log('Received WebSocket message:', message);
+    this.log('Received WebSocket message:', message);
 
     switch (message.type) {
       case 'scan':
@@ -236,7 +255,7 @@ class WSServer {
         break;
 
       default:
-        console.warn('Unknown message type:', message.type);
+        this.log('Unknown message type:', message.type);
         ws.send(JSON.stringify({
           type: 'error',
           error: `Unknown message type: ${message.type}`
@@ -245,7 +264,7 @@ class WSServer {
   }
 
   broadcast(message) {
-    console.log('****WS->Clients: Broadcasting:', {
+    this.log('****WS->Clients: Broadcasting:', {
       type: message.type,
       payload: message
     });
@@ -257,7 +276,10 @@ class WSServer {
         sentCount++;
       }
     });
-    console.log(`****WS->Clients: Broadcast complete - Sent to ${sentCount}/${this.clients.size} clients`);
+    this.log('****WS->Clients: Broadcast complete:', {
+      sentTo: sentCount,
+      totalClients: this.clients.size
+    });
   }
 }
 
