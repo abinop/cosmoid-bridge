@@ -57,6 +57,22 @@ class BLEManager extends EventEmitter {
         });
         
         try {
+          // Set up disconnect handler before connecting
+          peripheral.once('disconnect', () => {
+            this.log('Device disconnected', peripheral.uuid);
+            const device = this.devices.get(peripheral.uuid);
+            if (device) {
+              device.connected = false;
+              this.emit('deviceDisconnected', {
+                id: peripheral.uuid,
+                name: device.name
+              });
+              // Remove device from map
+              this.devices.delete(peripheral.uuid);
+              this.emit('deviceUpdate', device);
+            }
+          });
+
           await peripheral.connectAsync();
           this.log('Connected to device', peripheral.uuid);
 
@@ -94,10 +110,20 @@ class BLEManager extends EventEmitter {
                     const data = await char.readAsync();
                     deviceInfo.serial = data.toString().trim();
                     this.log('Serial Number read', deviceInfo.serial);
+                    this.emit('propertyUpdate', {
+                      deviceId: peripheral.uuid,
+                      property: 'serial',
+                      value: deviceInfo.serial
+                    });
                   } else if (char.uuid === '2a26') { // Firmware
                     const data = await char.readAsync();
                     deviceInfo.firmware = data.toString().trim();
                     this.log('Firmware Version read', deviceInfo.firmware);
+                    this.emit('propertyUpdate', {
+                      deviceId: peripheral.uuid,
+                      property: 'firmware',
+                      value: deviceInfo.firmware
+                    });
                   }
                 } catch (charError) {
                   this.log('Error reading characteristic', {
@@ -126,6 +152,11 @@ class BLEManager extends EventEmitter {
                 const data = await batteryChar.readAsync();
                 deviceInfo.batteryLevel = data[0];
                 this.log('Battery Level read', deviceInfo.batteryLevel);
+                this.emit('propertyUpdate', {
+                  deviceId: peripheral.uuid,
+                  property: 'batteryLevel',
+                  value: deviceInfo.batteryLevel
+                });
 
                 await batteryChar.subscribeAsync();
                 this.log('Subscribed to battery updates', peripheral.uuid);
@@ -133,6 +164,11 @@ class BLEManager extends EventEmitter {
                 batteryChar.on('data', (data) => {
                   deviceInfo.batteryLevel = data[0];
                   this.updateDeviceInfo(peripheral.uuid, { batteryLevel: data[0] });
+                  this.emit('propertyUpdate', {
+                    deviceId: peripheral.uuid,
+                    property: 'batteryLevel',
+                    value: data[0]
+                  });
                   this.emit('deviceUpdate', this.devices.get(peripheral.uuid));
                 });
               }
@@ -190,6 +226,17 @@ class BLEManager extends EventEmitter {
                         deviceId: peripheral.uuid,
                         buttonState,
                         pressValue
+                      });
+                      // Also emit property updates for button state and press value
+                      this.emit('propertyUpdate', {
+                        deviceId: peripheral.uuid,
+                        property: 'buttonState',
+                        value: buttonState
+                      });
+                      this.emit('propertyUpdate', {
+                        deviceId: peripheral.uuid,
+                        property: 'pressValue',
+                        value: pressValue
                       });
                     }
                   });

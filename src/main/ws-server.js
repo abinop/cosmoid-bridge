@@ -34,7 +34,10 @@ class WSServer {
         type: 'deviceConnected',
         device: {
           id: device.id,
-          name: device.name
+          name: device.name,
+          serial: device.serial,
+          firmware: device.firmware,
+          batteryLevel: device.batteryLevel
         }
       });
     });
@@ -46,6 +49,16 @@ class WSServer {
           id: device.id,
           name: device.name
         }
+      });
+    });
+
+    // Listen for property updates
+    this.bleManager.on('propertyUpdate', (data) => {
+      this.broadcast({
+        type: 'propertyUpdate',
+        deviceId: data.deviceId,
+        property: data.property,
+        value: data.value
       });
     });
 
