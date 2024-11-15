@@ -31,6 +31,7 @@ class WSServer {
 
     // Listen for device connection/disconnection
     this.bleManager.on('deviceConnected', (device) => {
+      console.log('****Device connected:', device);
       this.broadcast({
         type: 'deviceConnected',
         device: {
@@ -44,6 +45,7 @@ class WSServer {
     });
 
     this.bleManager.on('deviceDisconnected', (device) => {
+      console.log('****Device disconnected:', device);
       this.broadcast({
         type: 'deviceDisconnected',
         device: {
@@ -55,6 +57,7 @@ class WSServer {
 
     // Listen for property updates
     this.bleManager.on('propertyUpdate', (data) => {
+      console.log('****Property update received:', data);
       this.broadcast({
         type: 'propertyUpdate',
         deviceId: data.deviceId,
@@ -65,6 +68,7 @@ class WSServer {
 
     // Listen for button/sensor updates
     this.bleManager.on('buttonUpdate', (data) => {
+      console.log('****Button update received:', data);
       this.broadcast({
         type: 'buttonEvent',
         deviceId: data.deviceId,
@@ -74,6 +78,7 @@ class WSServer {
     });
 
     this.bleManager.on('sensorUpdate', (data) => {
+      console.log('****Sensor update received:', data);
       this.broadcast({
         type: 'sensorEvent',
         deviceId: data.deviceId,
@@ -87,24 +92,36 @@ class WSServer {
 
     this.wss.on('connection', (ws) => {
       this.clients.add(ws);
-      console.log('WebSocket client connected');
+      console.log('****WebSocket: New client connected, total clients:', this.clients.size);
 
       // Send initial device list
-      const devices = Array.from(this.bleManager.devices.values()).map(device => ({
-        id: device.id,
-        name: device.name,
-        serial: device.serial,
-        firmware: device.firmware,
-        batteryLevel: device.batteryLevel,
-        sensorValue: device.sensorValue,
-        pressValue: device.pressValue,
-        buttonState: device.buttonState,
-        rssi: device.rssi,
-        connected: device.connected
-      }));
+      const devices = Array.from(this.bleManager.devices.values()).map(device => {
+        console.log('****WebSocket: Sending initial device data:', {
+          id: device.id,
+          name: device.name,
+          connected: device.connected,
+          serial: device.serial,
+          firmware: device.firmware,
+          batteryLevel: device.batteryLevel,
+          pressValue: device.pressValue
+        });
+        return ({
+          id: device.id,
+          name: device.name,
+          serial: device.serial,
+          firmware: device.firmware,
+          batteryLevel: device.batteryLevel,
+          sensorValue: device.sensorValue,
+          pressValue: device.pressValue,
+          buttonState: device.buttonState,
+          rssi: device.rssi,
+          connected: device.connected
+        });
+      });
       ws.send(JSON.stringify({ type: 'devicesList', devices }));
 
       ws.on('message', async (message) => {
+        console.log('****WebSocket: Received message:', message.toString());
         try {
           const data = JSON.parse(message);
           await this.handleMessage(ws, data);
@@ -119,11 +136,11 @@ class WSServer {
 
       ws.on('close', () => {
         this.clients.delete(ws);
-        console.log('WebSocket client disconnected');
+        console.log('****WebSocket: Client disconnected, remaining clients:', this.clients.size);
       });
     });
 
-    console.log('WebSocket server started on port 8080');
+    console.log('****WebSocket: Server started on port 8080');
   }
 
   async handleMessage(ws, message) {
@@ -200,10 +217,14 @@ class WSServer {
   }
 
   broadcast(message) {
-    const messageStr = JSON.stringify(message);
-    this.clients.forEach(client => {
+    console.log('****WebSocket Broadcasting:', {
+      type: message.type,
+      data: message
+    });
+    const data = JSON.stringify(message);
+    this.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(messageStr);
+        client.send(data);
       }
     });
   }
