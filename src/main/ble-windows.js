@@ -52,22 +52,30 @@ class BLEManager {
 
         [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
 
-        # AQS string for BLE devices
-        $aqsFilter = "System.Devices.Aep.ProtocolId:=""{bb7bb05e-5972-42b5-94fc-76eaa7084d49}"""
-        $additionalProperties = @(
+        Write-Host "Starting BLE device scan..."
+        
+        # First, get advertising devices
+        $aqsAllDevices = "System.Devices.Aep.ProtocolId:=""{bb7bb05e-5972-42b5-94fc-76eaa7084d49}"""
+        $requestedProperties = @(
             "System.Devices.Aep.DeviceAddress",
             "System.Devices.Aep.IsConnected",
             "System.Devices.Aep.Bluetooth.Le.IsConnectable",
-            "System.Devices.Aep.SignalStrength"
+            "System.Devices.Aep.SignalStrength",
+            "System.Devices.Aep.Manufacturer",
+            "System.Devices.Aep.ModelName",
+            "System.Devices.Aep.ModelId"
         )
 
-        Write-Host "Starting BLE device scan..."
-        
-        # Get both paired and unpaired devices
-        $deviceInfos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($aqsFilter, $additionalProperties)) ([Windows.Devices.Enumeration.DeviceInformationCollection])
+        Write-Host "Scanning for advertising devices..."
+        $deviceInfos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync(
+            $aqsAllDevices, 
+            $requestedProperties,
+            [Windows.Devices.Enumeration.DeviceInformationKind]::AssociationEndpoint
+        )) ([Windows.Devices.Enumeration.DeviceInformationCollection])
 
         $devices = @()
         foreach ($dev in $deviceInfos) {
+            Write-Host "Found device: $($dev.Name)"
             $deviceInfo = @{
                 Id = $dev.Id
                 Name = $dev.Name
@@ -83,11 +91,13 @@ class BLEManager {
             $devices += $deviceInfo
         }
 
-        # Also get paired devices using Get-PnpDevice
+        # Then get paired devices
+        Write-Host "Getting paired devices..."
         Get-PnpDevice | Where-Object { 
             ($_.Class -eq "Bluetooth" -or $_.Class -eq "BTHLEDevice") -and 
             $_.Present -eq $true 
         } | ForEach-Object {
+            Write-Host "Found paired device: $($_.FriendlyName)"
             $device = $_
             $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
             
@@ -109,6 +119,7 @@ class BLEManager {
             }
         }
 
+        Write-Host "Scan complete. Converting to JSON..."
         ConvertTo-Json -InputObject $devices -Depth 10
       `;
 
@@ -118,12 +129,22 @@ class BLEManager {
 
       try {
         const devices = JSON.parse(scanResult || '[]');
+        
+        // Log all devices first
+        this.log('All discovered devices', devices);
+
         (Array.isArray(devices) ? devices : [devices]).forEach(device => {
+          // Log each device individually for debugging
+          this.log('Processing device', {
+            name: device.Name,
+            id: device.Id,
+            properties: device.Properties
+          });
+
           const isCosmoDevice = 
-            (device.Name && device.Name.toLowerCase().includes('cosmo')) ||
+            (device.Name && device.Name.toLowerCase() === 'cosmo') || // Exact match
             (device.Description && device.Description.toLowerCase().includes('cosmo')) ||
-            (device.Properties && device.Properties['System.Devices.Aep.DeviceAddress'] && 
-             device.Properties['System.Devices.Aep.DeviceAddress'].toLowerCase().includes('cosmo'));
+            (device.Properties && device.Properties['System.Devices.Aep.ModelName'] === 'Cosmo');
 
           if (isCosmoDevice) {
             const deviceId = device.Id;
