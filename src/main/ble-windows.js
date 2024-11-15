@@ -57,28 +57,96 @@ class BLEManager {
           const services = await peripheral.discoverServicesAsync();
           this.log('Discovered services', services.map(s => s.uuid));
 
-          // Find our Cosmo service
+          // Find our services
           const cosmoService = services.find(s => s.uuid === this.COSMO_SERVICE_UUID);
+          const deviceInfoService = services.find(s => s.uuid === '180a');
+          const batteryService = services.find(s => s.uuid === '180f');
+
           if (!cosmoService) {
             throw new Error(`Cosmo service not found. Available services: ${services.map(s => s.uuid).join(', ')}`);
           }
+
+          // Read device information
+          let deviceInfo = {
+            id: peripheral.uuid,
+            name: peripheral.advertisement.localName,
+            serial: null,
+            firmware: null,
+            batteryLevel: null
+          };
+
+          if (deviceInfoService) {
+            try {
+              const characteristics = await deviceInfoService.discoverCharacteristicsAsync();
+              this.log('Device Info characteristics', characteristics.map(c => c.uuid));
+              
+              for (const char of characteristics) {
+                try {
+                  if (char.uuid === '2a25') { // Serial Number
+                    const data = await char.readAsync();
+                    deviceInfo.serial = data.toString().trim();
+                    this.log('Serial Number', deviceInfo.serial);
+                  } else if (char.uuid === '2a26') { // Firmware
+                    const data = await char.readAsync();
+                    deviceInfo.firmware = data.toString().trim();
+                    this.log('Firmware Version', deviceInfo.firmware);
+                  }
+                } catch (charError) {
+                  this.log('Error reading characteristic', {
+                    uuid: char.uuid,
+                    error: charError.toString()
+                  });
+                }
+              }
+            } catch (error) {
+              this.log('Error reading device info service', error);
+            }
+          }
+
+          if (batteryService) {
+            try {
+              const characteristics = await batteryService.discoverCharacteristicsAsync();
+              const batteryChar = characteristics.find(c => c.uuid === '2a19');
+              if (batteryChar) {
+                const data = await batteryChar.readAsync();
+                deviceInfo.batteryLevel = data[0];
+                this.log('Battery Level', deviceInfo.batteryLevel);
+
+                // Subscribe to battery updates
+                await batteryChar.subscribeAsync();
+                batteryChar.on('data', (data) => {
+                  deviceInfo.batteryLevel = data[0];
+                  this.emit('batteryUpdate', {
+                    deviceId: peripheral.uuid,
+                    level: data[0]
+                  });
+                });
+              }
+            } catch (error) {
+              this.log('Error reading battery service', error);
+            }
+          }
+
+          this.log('Device Info', deviceInfo);
           
-          this.log('Found Cosmo service', cosmoService.uuid);
+          // Emit initial device info
+          this.emit('deviceInfo', deviceInfo);
 
           // Discover all characteristics
           const characteristics = await cosmoService.discoverCharacteristicsAsync();
           this.log('Discovered characteristics', characteristics.map(c => c.uuid));
 
           // Store device info
-          const deviceInfo = {
+          const deviceData = {
             peripheral,
             service: cosmoService,
             characteristics: characteristics.reduce((acc, char) => {
               acc[char.uuid] = char;
               return acc;
-            }, {})
+            }, {}),
+            info: deviceInfo
           };
-          this.devices.set(peripheral.uuid, deviceInfo);
+          this.devices.set(peripheral.uuid, deviceData);
 
           // Subscribe to notifications for each relevant characteristic
           for (const char of characteristics) {
