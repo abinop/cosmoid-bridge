@@ -1,16 +1,16 @@
 const WebSocket = require('ws');
-const BLEManager = require('./ble-windows');
 
 class WSServer {
-  constructor() {
+  constructor(bleManager) {
     this.wss = null;
     this.clients = new Set();
+    this.bleManager = bleManager;
     this.setupBLEListeners();
   }
 
   setupBLEListeners() {
     // Listen for device updates from BLE manager
-    BLEManager.on('deviceUpdate', (device) => {
+    this.bleManager.on('deviceUpdate', (device) => {
       this.broadcast({
         type: 'deviceUpdate',
         device: {
@@ -29,7 +29,7 @@ class WSServer {
     });
 
     // Listen for device connection/disconnection
-    BLEManager.on('deviceConnected', (device) => {
+    this.bleManager.on('deviceConnected', (device) => {
       this.broadcast({
         type: 'deviceConnected',
         device: {
@@ -39,7 +39,7 @@ class WSServer {
       });
     });
 
-    BLEManager.on('deviceDisconnected', (device) => {
+    this.bleManager.on('deviceDisconnected', (device) => {
       this.broadcast({
         type: 'deviceDisconnected',
         device: {
@@ -50,7 +50,7 @@ class WSServer {
     });
 
     // Listen for button/sensor updates
-    BLEManager.on('buttonUpdate', (data) => {
+    this.bleManager.on('buttonUpdate', (data) => {
       this.broadcast({
         type: 'buttonEvent',
         deviceId: data.deviceId,
@@ -59,7 +59,7 @@ class WSServer {
       });
     });
 
-    BLEManager.on('sensorUpdate', (data) => {
+    this.bleManager.on('sensorUpdate', (data) => {
       this.broadcast({
         type: 'sensorEvent',
         deviceId: data.deviceId,
@@ -76,7 +76,7 @@ class WSServer {
       console.log('WebSocket client connected');
 
       // Send initial device list
-      const devices = Array.from(BLEManager.devices.values()).map(device => ({
+      const devices = Array.from(this.bleManager.devices.values()).map(device => ({
         id: device.id,
         name: device.name,
         serial: device.serial,
@@ -117,11 +117,11 @@ class WSServer {
 
     switch (message.type) {
       case 'scan':
-        await BLEManager.startScanning();
+        await this.bleManager.startScanning();
         break;
 
       case 'getDevices':
-        const devices = Array.from(BLEManager.devices.values()).map(device => ({
+        const devices = Array.from(this.bleManager.devices.values()).map(device => ({
           id: device.id,
           name: device.name,
           serial: device.serial,
@@ -140,7 +140,7 @@ class WSServer {
         try {
           const { deviceId, data } = message;
           const [r, g, b] = data;
-          await BLEManager.setColor(deviceId, r, g, b, 1);
+          await this.bleManager.setColor(deviceId, r, g, b, 1);
           ws.send(JSON.stringify({
             type: 'eventResult',
             success: true,
@@ -160,7 +160,7 @@ class WSServer {
         try {
           const { deviceId, data } = message;
           const [intensity] = data;
-          await BLEManager.setBrightness(deviceId, intensity, 1);
+          await this.bleManager.setBrightness(deviceId, intensity, 1);
           ws.send(JSON.stringify({
             type: 'eventResult',
             success: true,

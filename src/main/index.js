@@ -1,7 +1,6 @@
 // src/main/index.js
 const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } = require('electron');
 const path = require('path');
-const WebSocket = require('ws');
 const Store = require('electron-store');
 const AutoLaunch = require('auto-launch');
 const BLEManager = require('./ble-windows');
@@ -10,7 +9,7 @@ const WSServer = require('./ws-server');
 let mainWindow;
 let tray;
 const store = new Store();
-const wsServer = new WSServer();
+const wsServer = new WSServer(BLEManager);
 
 // Create auto launcher
 const autoLauncher = new AutoLaunch({
@@ -28,9 +27,6 @@ function createWindow() {
     }
   });
 
-  // Make mainWindow globally accessible for BLE updates
-  global.mainWindow = mainWindow;
-
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
   // Initialize auto-launch checkbox state
@@ -38,6 +34,25 @@ function createWindow() {
   if (autoLaunchEnabled) {
     autoLauncher.enable();
   }
+
+  // Forward BLE events to renderer
+  BLEManager.on('deviceUpdate', (device) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('deviceUpdate', device);
+    }
+  });
+
+  BLEManager.on('deviceConnected', (device) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('deviceConnected', device);
+    }
+  });
+
+  BLEManager.on('deviceDisconnected', (device) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('deviceDisconnected', device);
+    }
+  });
 
   // Start BLE scanning when window is ready
   mainWindow.webContents.on('did-finish-load', () => {
@@ -95,7 +110,7 @@ ipcMain.on('setLuminosity', async (event, { deviceId, intensity }) => {
   }
 });
 
-ipcMain.on('requestDevices', () => {
+ipcMain.on('requestDevices', (event) => {
   const devices = Array.from(BLEManager.devices.values()).map(device => ({
     id: device.id,
     name: device.name,
@@ -108,13 +123,20 @@ ipcMain.on('requestDevices', () => {
     rssi: device.rssi,
     connected: device.connected
   }));
-  mainWindow?.webContents.send('deviceList', devices);
+  event.reply('deviceList', devices);
 });
 
+// App lifecycle
 app.whenReady().then(() => {
   createWindow();
   createTray();
   wsServer.start();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
 });
 
 app.on('window-all-closed', () => {
@@ -123,13 +145,6 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
-
-// Cleanup on quit
-app.on('before-quit', async () => {
-  await BLEManager.stopScanning();
+app.on('before-quit', () => {
+  BLEManager.stopScanning();
 });
