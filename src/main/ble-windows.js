@@ -7,6 +7,15 @@ class BLEManager {
     this.devices = new Map();
     this.isScanning = false;
     
+    // Cosmo device UUIDs
+    this.DEVICE_INFO_SERVICE_UUID = '0000180a-0000-1000-8000-00805f9b34fb';
+    this.SERIAL_CHARACTERISTIC_UUID = '00002a25-0000-1000-8000-00805f9b34fb';
+    this.FIRMWARE_CHARACTERISTIC_UUID = '00002a26-0000-1000-8000-00805f9b34fb';
+    this.COSMO_SERVICE_UUID = '00001523-1212-efde-1523-785feabcd123';
+    this.SENSOR_CHARACTERISTIC_UUID = '00001524-1212-efde-1523-785feabcd123';
+    this.BUTTON_STATUS_CHARACTERISTIC_UUID = '00001525-1212-efde-1523-785feabcd123';
+    this.COMMAND_CHARACTERISTIC_UUID = '00001528-1212-efde-1523-785feabcd123';
+    
     const appDataPath = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : '/var/local');
     this.logPath = path.join(appDataPath, 'Cosmoid Bridge', 'debug.log');
     
@@ -35,167 +44,105 @@ class BLEManager {
     this.devices.clear();
 
     try {
-      const scanCommand = `
-        Add-Type -AssemblyName System.Runtime.WindowsRuntime
-        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? { 
-            $_.Name -eq 'AsTask' -and 
-            $_.GetParameters().Count -eq 1 -and 
-            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' 
-        })[0]
+      // Request Bluetooth device with Cosmo service UUID
+      const device = await navigator.bluetooth.requestDevice({
+        filters: [
+          { namePrefix: 'Cosmo' },
+          { services: [this.COSMO_SERVICE_UUID] }
+        ],
+        optionalServices: [
+          this.DEVICE_INFO_SERVICE_UUID,
+          '0000180f-0000-1000-8000-00805f9b34fb' // Battery Service
+        ]
+      });
 
-        Function Await($WinRtTask, $ResultType) {
-            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
-            $netTask = $asTask.Invoke($null, @($WinRtTask))
-            $netTask.Wait(-1) | Out-Null
-            $netTask.Result
-        }
+      this.log('Device found', device.name);
+      
+      // Connect to the device
+      const server = await device.gatt.connect();
+      this.log('Connected to GATT server', server);
 
-        [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+      // Get Cosmo service
+      const cosmoService = await server.getPrimaryService(this.COSMO_SERVICE_UUID);
+      this.log('Got Cosmo service', cosmoService);
 
-        Write-Host "Starting BLE device scan..."
-        
-        # First, get advertising devices
-        $aqsAllDevices = "System.Devices.Aep.ProtocolId:=""{bb7bb05e-5972-42b5-94fc-76eaa7084d49}"""
-        $requestedProperties = @(
-            "System.Devices.Aep.DeviceAddress",
-            "System.Devices.Aep.IsConnected",
-            "System.Devices.Aep.Bluetooth.Le.IsConnectable",
-            "System.Devices.Aep.SignalStrength",
-            "System.Devices.Aep.Manufacturer",
-            "System.Devices.Aep.ModelName",
-            "System.Devices.Aep.ModelId"
-        )
+      // Get and subscribe to sensor characteristic
+      const sensorChar = await cosmoService.getCharacteristic(this.SENSOR_CHARACTERISTIC_UUID);
+      await sensorChar.startNotifications();
+      sensorChar.addEventListener('characteristicvaluechanged', (event) => {
+        const value = event.target.value;
+        const sensorValue = value.getUint8(0);
+        this.log('Sensor value changed', sensorValue);
+        // Emit event or callback here
+      });
 
-        Write-Host "Scanning for advertising devices..."
-        $deviceInfos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync(
-            $aqsAllDevices, 
-            $requestedProperties,
-            [Windows.Devices.Enumeration.DeviceInformationKind]::AssociationEndpoint
-        )) ([Windows.Devices.Enumeration.DeviceInformationCollection])
+      // Get and subscribe to button status
+      const buttonChar = await cosmoService.getCharacteristic(this.BUTTON_STATUS_CHARACTERISTIC_UUID);
+      await buttonChar.startNotifications();
+      buttonChar.addEventListener('characteristicvaluechanged', (event) => {
+        const value = event.target.value;
+        const buttonState = value.getUint8(0);
+        const forceValue = value.getUint8(1);
+        this.log('Button status changed', { buttonState, forceValue });
+        // Emit event or callback here
+      });
 
-        $devices = @()
-        foreach ($dev in $deviceInfos) {
-            Write-Host "Found device: $($dev.Name)"
-            $deviceInfo = @{
-                Id = $dev.Id
-                Name = $dev.Name
-                Kind = $dev.Kind.ToString()
-                IsEnabled = $dev.IsEnabled
-                Properties = @{}
-            }
+      // Store device info
+      this.devices.set(device.id, {
+        device,
+        server,
+        service: cosmoService,
+        sensorChar,
+        buttonChar
+      });
 
-            foreach ($prop in $dev.Properties.GetEnumerator()) {
-                $deviceInfo.Properties[$prop.Key] = $prop.Value
-            }
-
-            $devices += $deviceInfo
-        }
-
-        # Then get paired devices
-        Write-Host "Getting paired devices..."
-        Get-PnpDevice | Where-Object { 
-            ($_.Class -eq "Bluetooth" -or $_.Class -eq "BTHLEDevice") -and 
-            $_.Present -eq $true 
-        } | ForEach-Object {
-            Write-Host "Found paired device: $($_.FriendlyName)"
-            $device = $_
-            $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
-            
-            try {
-                $deviceInfo = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
-                $hardwareIds = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
-                
-                $devices += @{
-                    Name = $device.FriendlyName
-                    Id = $device.DeviceID
-                    Class = $device.Class
-                    Description = $device.Description
-                    Status = $device.Status
-                    HardwareIds = $hardwareIds
-                    IsPaired = $true
-                }
-            } catch {
-                Write-Host "Error getting device info: $_"
-            }
-        }
-
-        Write-Host "Scan complete. Converting to JSON..."
-        ConvertTo-Json -InputObject $devices -Depth 10
-      `;
-
-      this.log('Executing BLE scan');
-      const scanResult = await this.runPowerShell(scanCommand);
-      this.log('Scan raw output', scanResult);
-
-      try {
-        const devices = JSON.parse(scanResult || '[]');
-        
-        // Log all devices first
-        this.log('All discovered devices', devices);
-
-        (Array.isArray(devices) ? devices : [devices]).forEach(device => {
-          // Log each device individually for debugging
-          this.log('Processing device', {
-            name: device.Name,
-            id: device.Id,
-            properties: device.Properties
-          });
-
-          const isCosmoDevice = 
-            (device.Name && device.Name.toLowerCase() === 'cosmo') || // Exact match
-            (device.Description && device.Description.toLowerCase().includes('cosmo')) ||
-            (device.Properties && device.Properties['System.Devices.Aep.ModelName'] === 'Cosmo');
-
-          if (isCosmoDevice) {
-            const deviceId = device.Id;
-            this.devices.set(deviceId, {
-              id: deviceId,
-              name: device.Name || 'Unknown Cosmo Device',
-              description: device.Description,
-              status: device.Status,
-              class: device.Class,
-              isPaired: !!device.IsPaired,
-              isConnectable: device.Properties?.['System.Devices.Aep.Bluetooth.Le.IsConnectable'] || false,
-              signalStrength: device.Properties?.['System.Devices.Aep.SignalStrength'],
-              address: device.Properties?.['System.Devices.Aep.DeviceAddress'],
-              hardwareIds: device.HardwareIds
-            });
-          }
-        });
-
-        this.log('Discovered Cosmo devices', Array.from(this.devices.values()));
-      } catch (parseError) {
-        this.log('JSON Parse Error', parseError.toString());
-        this.log('Failed to parse scan results', scanResult);
-      }
     } catch (error) {
-      this.log('Scanning error', error.toString());
-      this.log('Error stack', error.stack);
+      this.log('Error scanning', error);
+      throw error;
     } finally {
       this.isScanning = false;
     }
   }
 
-  runPowerShell(script) {
-    return new Promise((resolve, reject) => {
-      const child = exec('powershell.exe -NoProfile -NonInteractive -Command -', 
-        { shell: true }, 
-        (error, stdout, stderr) => {
-          if (error) {
-            this.log('PowerShell Error', error);
-            reject(error);
-            return;
-          }
-          if (stderr) {
-            this.log('PowerShell stderr', stderr);
-          }
-          resolve(stdout);
-        });
+  async stopScanning() {
+    this.isScanning = false;
+    // Web Bluetooth API handles cleanup automatically
+    this.log('Stopped scanning', null);
+  }
 
-      child.stdin.write(script);
-      child.stdin.end();
-    });
+  async setColor(deviceId, r, g, b, mode = 1) {
+    const deviceInfo = this.devices.get(deviceId);
+    if (!deviceInfo) {
+      throw new Error('Device not found');
+    }
+
+    try {
+      const commandChar = await deviceInfo.service.getCharacteristic(this.COMMAND_CHARACTERISTIC_UUID);
+      const command = new Uint8Array([2, r, g, b, mode]); // 2 is SET_COLOR command
+      await commandChar.writeValue(command);
+      this.log('Color set', { r, g, b, mode });
+    } catch (error) {
+      this.log('Error setting color', error);
+      throw error;
+    }
+  }
+
+  async setBrightness(deviceId, intensity, delay = 1) {
+    const deviceInfo = this.devices.get(deviceId);
+    if (!deviceInfo) {
+      throw new Error('Device not found');
+    }
+
+    try {
+      const commandChar = await deviceInfo.service.getCharacteristic(this.COMMAND_CHARACTERISTIC_UUID);
+      const command = new Uint8Array([1, intensity, delay]); // 1 is SET_LUMINOSITY command
+      await commandChar.writeValue(command);
+      this.log('Brightness set', { intensity, delay });
+    } catch (error) {
+      this.log('Error setting brightness', error);
+      throw error;
+    }
   }
 }
 
-module.exports = new BLEManager(); 
+module.exports = new BLEManager();
