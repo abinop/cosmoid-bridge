@@ -5,6 +5,9 @@
   "main": "src/main/index.js",
   "author": "Alexandros Binopoulos",
   "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --debug",
@@ -20,12 +23,12 @@
     "auto-launch": "^5.0.6",
     "electron-store": "^8.1.0",
     "lru-cache": "^10.1.0",
-    "rimraf": "^5.0.5",
     "ws": "^8.15.1"
   },
   "devDependencies": {
     "electron": "22.3.27",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^23.6.0",
+    "isbinaryfile": "^4.0.10"
   },
   "build": {
     "appId": "com.cosmoid.bridge",

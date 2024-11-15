@@ -60,14 +60,16 @@ class BLEManager extends EventEmitter {
           await peripheral.connectAsync();
           this.log('Connected to device', peripheral.uuid);
 
+          this.log('Discovering services...', peripheral.uuid);
           const services = await peripheral.discoverServicesAsync();
+          this.log('Services discovered', services.map(s => s.uuid));
           
           const cosmoService = services.find(s => s.uuid === this.COSMO_SERVICE_UUID);
           const deviceInfoService = services.find(s => s.uuid === '180a');
           const batteryService = services.find(s => s.uuid === '180f');
 
           if (!cosmoService) {
-            throw new Error('Cosmo service not found');
+            throw new Error(`Cosmo service not found. Available services: ${services.map(s => s.uuid).join(', ')}`);
           }
 
           let deviceInfo = {
@@ -81,34 +83,53 @@ class BLEManager extends EventEmitter {
           };
 
           if (deviceInfoService) {
-            const characteristics = await deviceInfoService.discoverCharacteristicsAsync();
-            for (const char of characteristics) {
-              try {
-                if (char.uuid === '2a25') { // Serial Number
-                  const data = await char.readAsync();
-                  deviceInfo.serial = data.toString().trim();
-                } else if (char.uuid === '2a26') { // Firmware
-                  const data = await char.readAsync();
-                  deviceInfo.firmware = data.toString().trim();
+            try {
+              this.log('Discovering device info characteristics...', peripheral.uuid);
+              const characteristics = await deviceInfoService.discoverCharacteristicsAsync();
+              this.log('Device info characteristics discovered', characteristics.map(c => c.uuid));
+              
+              for (const char of characteristics) {
+                try {
+                  if (char.uuid === '2a25') { // Serial Number
+                    const data = await char.readAsync();
+                    deviceInfo.serial = data.toString().trim();
+                    this.log('Serial Number read', deviceInfo.serial);
+                  } else if (char.uuid === '2a26') { // Firmware
+                    const data = await char.readAsync();
+                    deviceInfo.firmware = data.toString().trim();
+                    this.log('Firmware Version read', deviceInfo.firmware);
+                  }
+                } catch (charError) {
+                  this.log('Error reading characteristic', {
+                    uuid: char.uuid,
+                    error: charError.toString(),
+                    stack: charError.stack
+                  });
                 }
-              } catch (charError) {
-                this.log('Error reading characteristic', {
-                  uuid: char.uuid,
-                  error: charError.toString()
-                });
               }
+            } catch (error) {
+              this.log('Error discovering device info characteristics', {
+                error: error.toString(),
+                stack: error.stack
+              });
             }
           }
 
           if (batteryService) {
             try {
+              this.log('Discovering battery characteristics...', peripheral.uuid);
               const characteristics = await batteryService.discoverCharacteristicsAsync();
+              this.log('Battery characteristics discovered', characteristics.map(c => c.uuid));
+              
               const batteryChar = characteristics.find(c => c.uuid === '2a19');
               if (batteryChar) {
                 const data = await batteryChar.readAsync();
                 deviceInfo.batteryLevel = data[0];
+                this.log('Battery Level read', deviceInfo.batteryLevel);
 
                 await batteryChar.subscribeAsync();
+                this.log('Subscribed to battery updates', peripheral.uuid);
+                
                 batteryChar.on('data', (data) => {
                   deviceInfo.batteryLevel = data[0];
                   this.updateDeviceInfo(peripheral.uuid, { batteryLevel: data[0] });
@@ -116,7 +137,10 @@ class BLEManager extends EventEmitter {
                 });
               }
             } catch (error) {
-              this.log('Error reading battery service', error);
+              this.log('Error handling battery service', {
+                error: error.toString(),
+                stack: error.stack
+              });
             }
           }
 
@@ -132,49 +156,74 @@ class BLEManager extends EventEmitter {
           this.emit('deviceUpdate', deviceInfo);
 
           // Set up Cosmo service characteristics
-          const characteristics = await cosmoService.discoverCharacteristicsAsync();
-          
-          for (const char of characteristics) {
-            if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
-                char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-              try {
-                await char.subscribeAsync();
-                char.on('data', (data) => {
-                  if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
-                    const sensorValue = data[0];
-                    this.updateDeviceInfo(peripheral.uuid, { sensorValue });
-                    this.emit('sensorUpdate', {
-                      deviceId: peripheral.uuid,
-                      value: sensorValue
-                    });
-                  } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                    const buttonState = data[0];
-                    const pressValue = data[1];
-                    this.updateDeviceInfo(peripheral.uuid, { 
-                      buttonState,
-                      pressValue
-                    });
-                    this.emit('buttonUpdate', {
-                      deviceId: peripheral.uuid,
-                      buttonState,
-                      pressValue
-                    });
-                  }
-                });
-              } catch (subError) {
-                this.log('Error subscribing to characteristic', {
-                  uuid: char.uuid,
-                  error: subError.toString()
-                });
+          try {
+            this.log('Discovering Cosmo service characteristics...', peripheral.uuid);
+            const characteristics = await cosmoService.discoverCharacteristicsAsync();
+            this.log('Cosmo characteristics discovered', characteristics.map(c => c.uuid));
+            
+            for (const char of characteristics) {
+              if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
+                  char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                try {
+                  await char.subscribeAsync();
+                  this.log('Subscribed to characteristic', {
+                    uuid: char.uuid,
+                    device: peripheral.uuid
+                  });
+                  
+                  char.on('data', (data) => {
+                    if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
+                      const sensorValue = data[0];
+                      this.updateDeviceInfo(peripheral.uuid, { sensorValue });
+                      this.emit('sensorUpdate', {
+                        deviceId: peripheral.uuid,
+                        value: sensorValue
+                      });
+                    } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                      const buttonState = data[0];
+                      const pressValue = data[1];
+                      this.updateDeviceInfo(peripheral.uuid, { 
+                        buttonState,
+                        pressValue
+                      });
+                      this.emit('buttonUpdate', {
+                        deviceId: peripheral.uuid,
+                        buttonState,
+                        pressValue
+                      });
+                    }
+                  });
+                } catch (subError) {
+                  this.log('Error subscribing to characteristic', {
+                    uuid: char.uuid,
+                    error: subError.toString(),
+                    stack: subError.stack
+                  });
+                }
               }
             }
+          } catch (error) {
+            this.log('Error discovering Cosmo characteristics', {
+              error: error.toString(),
+              stack: error.stack
+            });
           }
 
         } catch (error) {
           this.log('Error connecting to device', {
+            uuid: peripheral.uuid,
             error: error.toString(),
             stack: error.stack
           });
+          
+          try {
+            await peripheral.disconnectAsync();
+          } catch (disconnectError) {
+            this.log('Error disconnecting after failure', {
+              uuid: peripheral.uuid,
+              error: disconnectError.toString()
+            });
+          }
         }
       }
     });
