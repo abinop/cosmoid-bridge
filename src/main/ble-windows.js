@@ -8,14 +8,14 @@ class BLEManager {
     this.devices = new Map();
     this.isScanning = false;
     
-    // Cosmo device UUIDs
-    this.DEVICE_INFO_SERVICE_UUID = '0000180a-0000-1000-8000-00805f9b34fb';
-    this.SERIAL_CHARACTERISTIC_UUID = '00002a25-0000-1000-8000-00805f9b34fb';
-    this.FIRMWARE_CHARACTERISTIC_UUID = '00002a26-0000-1000-8000-00805f9b34fb';
-    this.COSMO_SERVICE_UUID = '00001523-1212-efde-1523-785feabcd123';
-    this.SENSOR_CHARACTERISTIC_UUID = '00001524-1212-efde-1523-785feabcd123';
-    this.BUTTON_STATUS_CHARACTERISTIC_UUID = '00001525-1212-efde-1523-785feabcd123';
-    this.COMMAND_CHARACTERISTIC_UUID = '00001528-1212-efde-1523-785feabcd123';
+    // Cosmo device UUIDs - stored without hyphens for noble compatibility
+    this.DEVICE_INFO_SERVICE_UUID = '0000180a0000100080000805f9b34fb';
+    this.SERIAL_CHARACTERISTIC_UUID = '00002a250000100080000805f9b34fb';
+    this.FIRMWARE_CHARACTERISTIC_UUID = '00002a260000100080000805f9b34fb';
+    this.COSMO_SERVICE_UUID = '000015231212efde1523785feabcd123';
+    this.SENSOR_CHARACTERISTIC_UUID = '000015241212efde1523785feabcd123';
+    this.BUTTON_STATUS_CHARACTERISTIC_UUID = '000015251212efde1523785feabcd123';
+    this.COMMAND_CHARACTERISTIC_UUID = '000015281212efde1523785feabcd123';
     
     const appDataPath = process.env.APPDATA || (process.platform === 'darwin' ? process.env.HOME + '/Library/Preferences' : '/var/local');
     this.logPath = path.join(appDataPath, 'Cosmoid Bridge', 'debug.log');
@@ -41,7 +41,8 @@ class BLEManager {
       this.log('Device found', {
         name: peripheral.advertisement.localName,
         uuid: peripheral.uuid,
-        rssi: peripheral.rssi
+        rssi: peripheral.rssi,
+        serviceUuids: peripheral.advertisement.serviceUuids
       });
 
       if (peripheral.advertisement.localName?.includes('Cosmo')) {
@@ -52,63 +53,84 @@ class BLEManager {
           await peripheral.connectAsync();
           this.log('Connected to device', peripheral.uuid);
 
-          // Discover services
-          const services = await peripheral.discoverServicesAsync([this.COSMO_SERVICE_UUID]);
-          this.log('Discovered services count', services.length);
+          // Discover all services first
+          const services = await peripheral.discoverServicesAsync();
+          this.log('Discovered services', services.map(s => s.uuid));
 
-          for (const service of services) {
-            this.log('Processing service', service.uuid);
-            if (service.uuid === this.COSMO_SERVICE_UUID) {
-              // Discover characteristics
-              const characteristics = await service.discoverCharacteristicsAsync([
-                this.SENSOR_CHARACTERISTIC_UUID,
-                this.BUTTON_STATUS_CHARACTERISTIC_UUID,
-                this.COMMAND_CHARACTERISTIC_UUID
-              ]);
+          // Find our Cosmo service
+          const cosmoService = services.find(s => s.uuid === this.COSMO_SERVICE_UUID);
+          if (!cosmoService) {
+            throw new Error(`Cosmo service not found. Available services: ${services.map(s => s.uuid).join(', ')}`);
+          }
+          
+          this.log('Found Cosmo service', cosmoService.uuid);
 
-              this.log('Discovered characteristics count', characteristics.length);
+          // Discover all characteristics
+          const characteristics = await cosmoService.discoverCharacteristicsAsync();
+          this.log('Discovered characteristics', characteristics.map(c => c.uuid));
 
-              // Store device info
-              this.devices.set(peripheral.uuid, {
-                peripheral,
-                service,
-                characteristics: characteristics.reduce((acc, char) => {
-                  acc[char.uuid] = char;
-                  return acc;
-                }, {})
-              });
+          // Store device info
+          const deviceInfo = {
+            peripheral,
+            service: cosmoService,
+            characteristics: characteristics.reduce((acc, char) => {
+              acc[char.uuid] = char;
+              return acc;
+            }, {})
+          };
+          this.devices.set(peripheral.uuid, deviceInfo);
 
-              // Subscribe to notifications
-              for (const char of characteristics) {
-                this.log('Processing characteristic', char.uuid);
-                if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
-                    char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                  try {
-                    await char.subscribeAsync();
-                    this.log('Subscribed to characteristic', char.uuid);
-                    
-                    char.on('data', (data) => {
-                      this.log(`Characteristic ${char.uuid} value changed`, data);
-                      if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
-                        const sensorValue = data.readUInt8(0);
-                        this.log('Sensor value', sensorValue);
-                      } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                        const buttonState = data.readUInt8(0);
-                        const forceValue = data.readUInt8(1);
-                        this.log('Button status', { buttonState, forceValue });
-                      }
+          // Subscribe to notifications for each relevant characteristic
+          for (const char of characteristics) {
+            this.log('Processing characteristic', char.uuid);
+            
+            if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
+                char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+              try {
+                // Read the initial value
+                const value = await char.readAsync();
+                this.log(`Initial value for ${char.uuid}`, value);
+
+                // Subscribe to notifications
+                await char.subscribeAsync();
+                this.log('Subscribed to characteristic', char.uuid);
+                
+                char.on('data', (data) => {
+                  this.log(`Characteristic ${char.uuid} value changed`, data);
+                  if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
+                    const sensorValue = data.readUInt8(0);
+                    this.log('Sensor value', sensorValue);
+                    this.emit('sensorUpdate', {
+                      deviceId: peripheral.uuid,
+                      value: sensorValue
                     });
-                  } catch (subError) {
-                    this.log('Error subscribing to characteristic', {
-                      uuid: char.uuid,
-                      error: subError.toString(),
-                      stack: subError.stack
+                  } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                    const buttonState = data.readUInt8(0);
+                    const forceValue = data.readUInt8(1);
+                    this.log('Button status', { buttonState, forceValue });
+                    this.emit('buttonUpdate', {
+                      deviceId: peripheral.uuid,
+                      buttonState,
+                      forceValue
                     });
                   }
-                }
+                });
+              } catch (subError) {
+                this.log('Error handling characteristic', {
+                  uuid: char.uuid,
+                  error: subError.toString(),
+                  stack: subError.stack
+                });
               }
             }
           }
+
+          // Emit device connected event
+          this.emit('deviceConnected', {
+            id: peripheral.uuid,
+            name: peripheral.advertisement.localName
+          });
+
         } catch (error) {
           this.log('Error connecting to device', {
             error: error.toString(),
@@ -119,6 +141,11 @@ class BLEManager {
     });
   }
 
+  emit(event, data) {
+    // You can implement your event emitting logic here
+    this.log('Event emitted', { event, data });
+  }
+
   log(message, data) {
     const timestamp = new Date().toISOString();
     let logMessage = `${timestamp} - ${message}: ${typeof data === 'object' ? JSON.stringify(data, null, 2) : data}\n`;
@@ -127,7 +154,7 @@ class BLEManager {
   }
 
   startActualScan() {
-    noble.startScanningAsync([this.COSMO_SERVICE_UUID], false)
+    noble.startScanningAsync([], false) // Scan for all devices, filter by name instead
       .then(() => {
         this.log('Scanning started', null);
       })
