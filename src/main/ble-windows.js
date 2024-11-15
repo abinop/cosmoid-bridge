@@ -9,7 +9,8 @@ class BLEManager extends EventEmitter {
   constructor() {
     super();
     this.devices = new Map();
-    this.isScanning = false;
+    this._scanning = false;
+    this._connectionCheckInterval = null;
     
     // Cosmo device UUIDs - stored without hyphens for noble compatibility
     this.DEVICE_INFO_SERVICE_UUID = '0000180a0000100080000805f9b34fb';
@@ -42,7 +43,7 @@ class BLEManager extends EventEmitter {
   setupNoble() {
     noble.on('stateChange', (state) => {
       this.log('Bluetooth state changed', state);
-      if (state === 'poweredOn' && this.isScanning) {
+      if (state === 'poweredOn' && this._scanning) {
         this.startActualScan();
       }
     });
@@ -355,40 +356,49 @@ class BLEManager extends EventEmitter {
       });
   }
 
-  async startScanning() {
-    if (this.isScanning) {
-      this.log('startScanning', 'Already scanning');
+  startScanning() {
+    if (this._scanning) {
       return;
     }
 
-    this.isScanning = true;
-    this.devices.clear();
-    this.emitAllDevices(); // Clear the UI list
+    this._scanning = true;
+    noble.startScanning([], true, (error) => {
+      this.log('Scanning started', error);
+    });
 
-    try {
-      if (noble.state === 'poweredOn') {
-        await this.startActualScan();
-      } else {
-        this.log('Bluetooth not powered on', noble.state);
+    // Periodically check device connections
+    this._connectionCheckInterval = setInterval(() => {
+      for (const [uuid, device] of this.devices.entries()) {
+        if (device.peripheral && !device.peripheral.state !== 'connected') {
+          this.log('Device connection lost', uuid);
+          this.handleDeviceDisconnection(uuid, device);
+        }
       }
-    } catch (error) {
-      this.log('Error scanning', {
-        error: error.toString(),
-        stack: error.stack
-      });
-      throw error;
-    }
+    }, 5000);
   }
 
-  async stopScanning() {
-    this.isScanning = false;
-    try {
-      await noble.stopScanningAsync();
-      this.log('Stopped scanning', null);
-    } catch (error) {
-      this.log('Error stopping scan', {
-        error: error.toString(),
-        stack: error.stack
+  stopScanning() {
+    this._scanning = false;
+    if (this._connectionCheckInterval) {
+      clearInterval(this._connectionCheckInterval);
+    }
+    noble.stopScanning((error) => {
+      this.log('Stopped scanning', error);
+    });
+  }
+
+  handleDeviceDisconnection(uuid, device) {
+    if (device.connected) {
+      device.connected = false;
+      this.emit('deviceDisconnected', {
+        id: uuid,
+        name: device.name
+      });
+      this.devices.delete(uuid);
+      this.emit('deviceUpdate', {
+        id: uuid,
+        name: device.name,
+        connected: false
       });
     }
   }
