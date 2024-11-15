@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Setup auto-launch checkbox
   autoLaunchCheckbox.addEventListener('change', (e) => {
+    console.log('Auto-launch checkbox changed:', e.target.checked);
     ipcRenderer.send('toggle-auto-launch', e.target.checked);
   });
 
@@ -27,11 +28,11 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDevicesList(devices);
   });
 
-  // Handle device connection events from IPC
-  ipcRenderer.on('deviceConnected', (event, device) => {
-    console.log('Device connected:', device);
-    updateDeviceInList(device);
-  });
+  // // Handle device connection events from IPC
+  // ipcRenderer.on('deviceConnected', (event, device) => {
+  //   console.log('Device connected:', device);
+  //   updateDeviceInList(device);
+  // });
 
   // Handle device disconnection events from IPC 
   ipcRenderer.on('deviceDisconnected', (event, device) => {

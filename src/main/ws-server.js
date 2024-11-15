@@ -11,6 +11,7 @@ class WSServer {
   setupBLEListeners() {
     // Listen for device updates from BLE manager
     this.bleManager.on('deviceUpdate', (device) => {
+      console.log('****Device update received:', device);
       this.broadcast({
         type: 'deviceUpdate',
         device: {
