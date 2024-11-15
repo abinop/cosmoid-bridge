@@ -1,17 +1,16 @@
 // src/main/index.js
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } = require('electron');
 const path = require('path');
 const WebSocket = require('ws');
 const Store = require('electron-store');
 const AutoLaunch = require('auto-launch');
-const BLEServer = require('./ble-server');
+const BLEManager = require('./ble-windows');
 const WSServer = require('./ws-server');
 
 let mainWindow;
 let tray;
 const store = new Store();
-const bleServer = new BLEServer();
-const wsServer = new WSServer(bleServer);
+const wsServer = new WSServer();
 
 // Create auto launcher
 const autoLauncher = new AutoLaunch({
@@ -29,6 +28,9 @@ function createWindow() {
     }
   });
 
+  // Make mainWindow globally accessible for BLE updates
+  global.mainWindow = mainWindow;
+
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
   // Initialize auto-launch checkbox state
@@ -36,6 +38,13 @@ function createWindow() {
   if (autoLaunchEnabled) {
     autoLauncher.enable();
   }
+
+  // Start BLE scanning when window is ready
+  mainWindow.webContents.on('did-finish-load', () => {
+    BLEManager.startScanning().catch(error => {
+      console.error('Failed to start scanning:', error);
+    });
+  });
 }
 
 function createTray() {
@@ -52,25 +61,54 @@ function createTray() {
 }
 
 // IPC handlers
-app.on('ready', () => {
-  // Handle auto-launch toggle
-  require('electron').ipcMain.on('toggle-auto-launch', async (event, enabled) => {
-    try {
-      if (enabled) {
-        await autoLauncher.enable();
-      } else {
-        await autoLauncher.disable();
-      }
-      store.set('autoLaunch', enabled);
-    } catch (error) {
-      console.error('Failed to toggle auto-launch:', error);
+ipcMain.on('toggle-auto-launch', async (event, enabled) => {
+  try {
+    if (enabled) {
+      await autoLauncher.enable();
+    } else {
+      await autoLauncher.disable();
     }
-  });
+    store.set('autoLaunch', enabled);
+  } catch (error) {
+    console.error('Failed to toggle auto-launch:', error);
+  }
+});
 
-  // Handle window hide
-  require('electron').ipcMain.on('hide-window', () => {
-    mainWindow.hide();
-  });
+ipcMain.on('hide-window', () => {
+  mainWindow.hide();
+});
+
+// Handle device control commands
+ipcMain.on('setColor', async (event, { deviceId, color }) => {
+  try {
+    await BLEManager.setColor(deviceId, color.r, color.g, color.b, 1);
+  } catch (error) {
+    console.error('Failed to set color:', error);
+  }
+});
+
+ipcMain.on('setLuminosity', async (event, { deviceId, intensity }) => {
+  try {
+    await BLEManager.setBrightness(deviceId, intensity, 1);
+  } catch (error) {
+    console.error('Failed to set luminosity:', error);
+  }
+});
+
+ipcMain.on('requestDevices', () => {
+  const devices = Array.from(BLEManager.devices.values()).map(device => ({
+    id: device.id,
+    name: device.name,
+    serial: device.serial,
+    firmware: device.firmware,
+    batteryLevel: device.batteryLevel,
+    sensorValue: device.sensorValue,
+    pressValue: device.pressValue,
+    buttonState: device.buttonState,
+    rssi: device.rssi,
+    connected: device.connected
+  }));
+  mainWindow?.webContents.send('deviceList', devices);
 });
 
 app.whenReady().then(() => {
@@ -89,4 +127,9 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
+});
+
+// Cleanup on quit
+app.on('before-quit', async () => {
+  await BLEManager.stopScanning();
 });

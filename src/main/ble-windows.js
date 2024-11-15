@@ -2,6 +2,7 @@ const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const noble = require('@abandonware/noble');
+const { ipcMain } = require('electron');
 
 class BLEManager {
   constructor() {
@@ -26,7 +27,14 @@ class BLEManager {
     }
 
     this.setupNoble();
+    this.setupIPC();
     this.log('BLEManager', 'Initialized');
+  }
+
+  setupIPC() {
+    ipcMain.on('requestDevices', () => {
+      this.emitAllDevices();
+    });
   }
 
   setupNoble() {
@@ -38,68 +46,55 @@ class BLEManager {
     });
 
     noble.on('discover', async (peripheral) => {
-      this.log('Device found', {
-        name: peripheral.advertisement.localName,
-        uuid: peripheral.uuid,
-        rssi: peripheral.rssi,
-        serviceUuids: peripheral.advertisement.serviceUuids
-      });
-
+      // Only process and log Cosmo devices
       if (peripheral.advertisement.localName?.includes('Cosmo')) {
-        this.log('Cosmo device found', peripheral.advertisement.localName);
+        this.log('Cosmo device found', {
+          name: peripheral.advertisement.localName,
+          uuid: peripheral.uuid,
+          rssi: peripheral.rssi
+        });
         
         try {
-          // Connect to the device
           await peripheral.connectAsync();
           this.log('Connected to device', peripheral.uuid);
 
-          // Discover all services first
           const services = await peripheral.discoverServicesAsync();
-          this.log('Discovered services', services.map(s => s.uuid));
-
-          // Find our services
+          
           const cosmoService = services.find(s => s.uuid === this.COSMO_SERVICE_UUID);
           const deviceInfoService = services.find(s => s.uuid === '180a');
           const batteryService = services.find(s => s.uuid === '180f');
 
           if (!cosmoService) {
-            throw new Error(`Cosmo service not found. Available services: ${services.map(s => s.uuid).join(', ')}`);
+            throw new Error('Cosmo service not found');
           }
 
-          // Read device information
           let deviceInfo = {
             id: peripheral.uuid,
             name: peripheral.advertisement.localName,
             serial: null,
             firmware: null,
-            batteryLevel: null
+            batteryLevel: null,
+            rssi: peripheral.rssi,
+            connected: true
           };
 
           if (deviceInfoService) {
-            try {
-              const characteristics = await deviceInfoService.discoverCharacteristicsAsync();
-              this.log('Device Info characteristics', characteristics.map(c => c.uuid));
-              
-              for (const char of characteristics) {
-                try {
-                  if (char.uuid === '2a25') { // Serial Number
-                    const data = await char.readAsync();
-                    deviceInfo.serial = data.toString().trim();
-                    this.log('Serial Number', deviceInfo.serial);
-                  } else if (char.uuid === '2a26') { // Firmware
-                    const data = await char.readAsync();
-                    deviceInfo.firmware = data.toString().trim();
-                    this.log('Firmware Version', deviceInfo.firmware);
-                  }
-                } catch (charError) {
-                  this.log('Error reading characteristic', {
-                    uuid: char.uuid,
-                    error: charError.toString()
-                  });
+            const characteristics = await deviceInfoService.discoverCharacteristicsAsync();
+            for (const char of characteristics) {
+              try {
+                if (char.uuid === '2a25') { // Serial Number
+                  const data = await char.readAsync();
+                  deviceInfo.serial = data.toString().trim();
+                } else if (char.uuid === '2a26') { // Firmware
+                  const data = await char.readAsync();
+                  deviceInfo.firmware = data.toString().trim();
                 }
+              } catch (charError) {
+                this.log('Error reading characteristic', {
+                  uuid: char.uuid,
+                  error: charError.toString()
+                });
               }
-            } catch (error) {
-              this.log('Error reading device info service', error);
             }
           }
 
@@ -110,16 +105,11 @@ class BLEManager {
               if (batteryChar) {
                 const data = await batteryChar.readAsync();
                 deviceInfo.batteryLevel = data[0];
-                this.log('Battery Level', deviceInfo.batteryLevel);
 
-                // Subscribe to battery updates
                 await batteryChar.subscribeAsync();
                 batteryChar.on('data', (data) => {
                   deviceInfo.batteryLevel = data[0];
-                  this.emit('batteryUpdate', {
-                    deviceId: peripheral.uuid,
-                    level: data[0]
-                  });
+                  this.updateDeviceInfo(peripheral.uuid, { batteryLevel: data[0] });
                 });
               }
             } catch (error) {
@@ -127,77 +117,42 @@ class BLEManager {
             }
           }
 
-          this.log('Device Info', deviceInfo);
-          
-          // Emit initial device info
-          this.emit('deviceInfo', deviceInfo);
-
-          // Discover all characteristics
-          const characteristics = await cosmoService.discoverCharacteristicsAsync();
-          this.log('Discovered characteristics', characteristics.map(c => c.uuid));
-
-          // Store device info
-          const deviceData = {
+          // Store the complete device info
+          this.devices.set(peripheral.uuid, {
+            ...deviceInfo,
             peripheral,
-            service: cosmoService,
-            characteristics: characteristics.reduce((acc, char) => {
-              acc[char.uuid] = char;
-              return acc;
-            }, {}),
-            info: deviceInfo
-          };
-          this.devices.set(peripheral.uuid, deviceData);
+            service: cosmoService
+          });
 
-          // Subscribe to notifications for each relevant characteristic
+          // Emit to renderer
+          this.emitDeviceUpdate(deviceInfo);
+
+          // Set up Cosmo service characteristics
+          const characteristics = await cosmoService.discoverCharacteristicsAsync();
+          
           for (const char of characteristics) {
-            this.log('Processing characteristic', char.uuid);
-            
             if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID || 
                 char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
               try {
-                // Read the initial value
-                const value = await char.readAsync();
-                this.log(`Initial value for ${char.uuid}`, value);
-
-                // Subscribe to notifications
                 await char.subscribeAsync();
-                this.log('Subscribed to characteristic', char.uuid);
-                
                 char.on('data', (data) => {
-                  this.log(`Characteristic ${char.uuid} value changed`, data);
                   if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
-                    const sensorValue = data.readUInt8(0);
-                    this.log('Sensor value', sensorValue);
-                    this.emit('sensorUpdate', {
-                      deviceId: peripheral.uuid,
-                      value: sensorValue
-                    });
+                    this.updateDeviceInfo(peripheral.uuid, { sensorValue: data[0] });
                   } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
-                    const buttonState = data.readUInt8(0);
-                    const forceValue = data.readUInt8(1);
-                    this.log('Button status', { buttonState, forceValue });
-                    this.emit('buttonUpdate', {
-                      deviceId: peripheral.uuid,
-                      buttonState,
-                      forceValue
+                    this.updateDeviceInfo(peripheral.uuid, { 
+                      buttonState: data[0],
+                      pressValue: data[1]
                     });
                   }
                 });
               } catch (subError) {
-                this.log('Error handling characteristic', {
+                this.log('Error subscribing to characteristic', {
                   uuid: char.uuid,
-                  error: subError.toString(),
-                  stack: subError.stack
+                  error: subError.toString()
                 });
               }
             }
           }
-
-          // Emit device connected event
-          this.emit('deviceConnected', {
-            id: peripheral.uuid,
-            name: peripheral.advertisement.localName
-          });
 
         } catch (error) {
           this.log('Error connecting to device', {
@@ -207,11 +162,61 @@ class BLEManager {
         }
       }
     });
+
+    // Handle disconnection
+    noble.on('disconnect', async (peripheral) => {
+      this.log('Device disconnected', peripheral.uuid);
+      if (this.devices.has(peripheral.uuid)) {
+        const deviceInfo = this.devices.get(peripheral.uuid);
+        deviceInfo.connected = false;
+        this.emitDeviceUpdate(deviceInfo);
+      }
+    });
   }
 
-  emit(event, data) {
-    // You can implement your event emitting logic here
-    this.log('Event emitted', { event, data });
+  updateDeviceInfo(deviceId, updates) {
+    const device = this.devices.get(deviceId);
+    if (device) {
+      Object.assign(device, updates);
+      this.emitDeviceUpdate(device);
+    }
+  }
+
+  emitDeviceUpdate(deviceInfo) {
+    // Send to all renderer processes
+    const cleanDeviceInfo = {
+      id: deviceInfo.id,
+      name: deviceInfo.name,
+      serial: deviceInfo.serial,
+      firmware: deviceInfo.firmware,
+      batteryLevel: deviceInfo.batteryLevel,
+      sensorValue: deviceInfo.sensorValue,
+      pressValue: deviceInfo.pressValue,
+      buttonState: deviceInfo.buttonState,
+      rssi: deviceInfo.rssi,
+      connected: deviceInfo.connected
+    };
+    
+    this.log('Emitting device update', cleanDeviceInfo);
+    global.mainWindow?.webContents.send('deviceUpdate', cleanDeviceInfo);
+  }
+
+  emitAllDevices() {
+    const devices = Array.from(this.devices.values()).map(device => ({
+      id: device.id,
+      name: device.name,
+      serial: device.serial,
+      firmware: device.firmware,
+      batteryLevel: device.batteryLevel,
+      sensorValue: device.sensorValue,
+      pressValue: device.pressValue,
+      buttonState: device.buttonState,
+      rssi: device.rssi,
+      connected: device.connected
+    }));
+    
+    this.log('Emitting all devices', devices);
+    global.mainWindow?.webContents.send('deviceList', devices);
   }
 
   log(message, data) {
@@ -222,7 +227,7 @@ class BLEManager {
   }
 
   startActualScan() {
-    noble.startScanningAsync([], false) // Scan for all devices, filter by name instead
+    noble.startScanningAsync([], false)
       .then(() => {
         this.log('Scanning started', null);
       })
@@ -242,6 +247,7 @@ class BLEManager {
 
     this.isScanning = true;
     this.devices.clear();
+    this.emitAllDevices(); // Clear the UI list
 
     try {
       if (noble.state === 'poweredOn') {
@@ -278,7 +284,7 @@ class BLEManager {
     }
 
     try {
-      const commandChar = deviceInfo.characteristics[this.COMMAND_CHARACTERISTIC_UUID];
+      const commandChar = deviceInfo.service.characteristics.find(c => c.uuid === this.COMMAND_CHARACTERISTIC_UUID);
       if (!commandChar) {
         throw new Error('Command characteristic not found');
       }
@@ -302,7 +308,7 @@ class BLEManager {
     }
 
     try {
-      const commandChar = deviceInfo.characteristics[this.COMMAND_CHARACTERISTIC_UUID];
+      const commandChar = deviceInfo.service.characteristics.find(c => c.uuid === this.COMMAND_CHARACTERISTIC_UUID);
       if (!commandChar) {
         throw new Error('Command characteristic not found');
       }
