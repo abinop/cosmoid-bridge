@@ -11,7 +11,15 @@ class WSServer {
   setupBLEListeners() {
     // Listen for device updates from BLE manager
     this.bleManager.on('deviceUpdate', (device) => {
-      console.log('****Device update received:', device);
+      console.log('****BLE->WS: Device update received:', {
+        id: device.id,
+        name: device.name,
+        connected: device.connected,
+        serial: device.serial,
+        firmware: device.firmware,
+        batteryLevel: device.batteryLevel,
+        pressValue: device.pressValue
+      });
       this.broadcast({
         type: 'deviceUpdate',
         device: {
@@ -31,7 +39,13 @@ class WSServer {
 
     // Listen for device connection/disconnection
     this.bleManager.on('deviceConnected', (device) => {
-      console.log('****Device connected:', device);
+      console.log('****BLE->WS: Device connected:', {
+        id: device.id,
+        name: device.name,
+        serial: device.serial,
+        firmware: device.firmware,
+        batteryLevel: device.batteryLevel
+      });
       this.broadcast({
         type: 'deviceConnected',
         device: {
@@ -45,7 +59,10 @@ class WSServer {
     });
 
     this.bleManager.on('deviceDisconnected', (device) => {
-      console.log('****Device disconnected:', device);
+      console.log('****BLE->WS: Device disconnected:', {
+        id: device.id,
+        name: device.name
+      });
       this.broadcast({
         type: 'deviceDisconnected',
         device: {
@@ -57,7 +74,11 @@ class WSServer {
 
     // Listen for property updates
     this.bleManager.on('propertyUpdate', (data) => {
-      console.log('****Property update received:', data);
+      console.log('****BLE->WS: Property update:', {
+        deviceId: data.deviceId,
+        property: data.property,
+        value: data.value
+      });
       this.broadcast({
         type: 'propertyUpdate',
         deviceId: data.deviceId,
@@ -68,7 +89,11 @@ class WSServer {
 
     // Listen for button/sensor updates
     this.bleManager.on('buttonUpdate', (data) => {
-      console.log('****Button update received:', data);
+      console.log('****BLE->WS: Button update:', {
+        deviceId: data.deviceId,
+        buttonState: data.buttonState,
+        pressValue: data.pressValue
+      });
       this.broadcast({
         type: 'buttonEvent',
         deviceId: data.deviceId,
@@ -78,7 +103,10 @@ class WSServer {
     });
 
     this.bleManager.on('sensorUpdate', (data) => {
-      console.log('****Sensor update received:', data);
+      console.log('****BLE->WS: Sensor update:', {
+        deviceId: data.deviceId,
+        value: data.value
+      });
       this.broadcast({
         type: 'sensorEvent',
         deviceId: data.deviceId,
@@ -217,16 +245,19 @@ class WSServer {
   }
 
   broadcast(message) {
-    console.log('****WebSocket Broadcasting:', {
+    console.log('****WS->Clients: Broadcasting:', {
       type: message.type,
-      data: message
+      payload: message
     });
     const data = JSON.stringify(message);
+    let sentCount = 0;
     this.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(data);
+        sentCount++;
       }
     });
+    console.log(`****WS->Clients: Broadcast complete - Sent to ${sentCount}/${this.clients.size} clients`);
   }
 }
 
