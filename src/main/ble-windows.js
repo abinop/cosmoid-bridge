@@ -36,65 +36,80 @@ class BLEManager {
 
     try {
       const scanCommand = `
-        $source = @"
-using System;
-using System.Threading;
-using Windows.Devices.Bluetooth;
-using Windows.Devices.Bluetooth.Advertisement;
-using Windows.Devices.Enumeration;
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | ? { 
+            $_.Name -eq 'AsTask' -and 
+            $_.GetParameters().Count -eq 1 -and 
+            $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' 
+        })[0]
 
-public class BLEScanner {
-    public static string ScanForDevices(int scanTime = 5) {
-        var devices = new System.Collections.Generic.List<object>();
-        var watcher = new BluetoothLEAdvertisementWatcher();
-        var scanComplete = new ManualResetEvent(false);
-        
-        watcher.ScanningMode = BluetoothLEScanningMode.Active;
-        watcher.SignalStrengthFilter.SamplingInterval = TimeSpan.FromMilliseconds(100);
-        
-        watcher.Received += async (sender, args) => {
-            try {
-                var deviceInfo = await BluetoothLEDevice.FromBluetoothAddressAsync(args.BluetoothAddress);
-                if (deviceInfo != null) {
-                    var name = args.Advertisement.LocalName;
-                    if (!string.IsNullOrEmpty(name) && name.Contains("Cosmo", StringComparison.OrdinalIgnoreCase)) {
-                        var device = new {
-                            Id = deviceInfo.DeviceId,
-                            Name = name,
-                            Address = args.BluetoothAddress.ToString("X"),
-                            Rssi = args.RawSignalStrengthInDBm,
-                            IsConnectable = args.Advertisement.IsConnectable,
-                            IsCosmoDevice = true
-                        };
-                        
-                        if (!devices.Exists(d => d.Address == device.Address)) {
-                            devices.Add(device);
-                            Console.WriteLine($"Found Cosmo device: {name}");
-                        }
-                    }
-                }
-            } catch (Exception ex) {
-                Console.WriteLine($"Error processing device: {ex.Message}");
-            }
-        };
-        
-        watcher.Start();
-        Console.WriteLine("Scanning started...");
-        scanComplete.WaitOne(scanTime * 1000);
-        watcher.Stop();
-        
-        return System.Text.Json.JsonSerializer.Serialize(devices);
-    }
-}
-"@
-        
-        Add-Type -TypeDefinition $source -Language CSharp -ReferencedAssemblies @(
-            "System.Runtime",
-            "System.Collections",
-            "System.Text.Json"
+        Function Await($WinRtTask, $ResultType) {
+            $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+            $netTask = $asTask.Invoke($null, @($WinRtTask))
+            $netTask.Wait(-1) | Out-Null
+            $netTask.Result
+        }
+
+        [Windows.Devices.Enumeration.DeviceInformation,Windows.Devices.Enumeration,ContentType=WindowsRuntime] | Out-Null
+
+        # AQS string for BLE devices
+        $aqsFilter = "System.Devices.Aep.ProtocolId:=""{bb7bb05e-5972-42b5-94fc-76eaa7084d49}"""
+        $additionalProperties = @(
+            "System.Devices.Aep.DeviceAddress",
+            "System.Devices.Aep.IsConnected",
+            "System.Devices.Aep.Bluetooth.Le.IsConnectable",
+            "System.Devices.Aep.SignalStrength"
         )
+
+        Write-Host "Starting BLE device scan..."
         
-        [BLEScanner]::ScanForDevices(5)
+        # Get both paired and unpaired devices
+        $deviceInfos = Await ([Windows.Devices.Enumeration.DeviceInformation]::FindAllAsync($aqsFilter, $additionalProperties)) ([Windows.Devices.Enumeration.DeviceInformationCollection])
+
+        $devices = @()
+        foreach ($dev in $deviceInfos) {
+            $deviceInfo = @{
+                Id = $dev.Id
+                Name = $dev.Name
+                Kind = $dev.Kind.ToString()
+                IsEnabled = $dev.IsEnabled
+                Properties = @{}
+            }
+
+            foreach ($prop in $dev.Properties.GetEnumerator()) {
+                $deviceInfo.Properties[$prop.Key] = $prop.Value
+            }
+
+            $devices += $deviceInfo
+        }
+
+        # Also get paired devices using Get-PnpDevice
+        Get-PnpDevice | Where-Object { 
+            ($_.Class -eq "Bluetooth" -or $_.Class -eq "BTHLEDevice") -and 
+            $_.Present -eq $true 
+        } | ForEach-Object {
+            $device = $_
+            $devicePath = "HKLM:\\SYSTEM\\CurrentControlSet\\Enum\\" + $device.DeviceID
+            
+            try {
+                $deviceInfo = Get-ItemProperty -Path $devicePath -ErrorAction SilentlyContinue
+                $hardwareIds = (Get-ItemProperty -Path $devicePath -Name "HardwareID" -ErrorAction SilentlyContinue).HardwareID
+                
+                $devices += @{
+                    Name = $device.FriendlyName
+                    Id = $device.DeviceID
+                    Class = $device.Class
+                    Description = $device.Description
+                    Status = $device.Status
+                    HardwareIds = $hardwareIds
+                    IsPaired = $true
+                }
+            } catch {
+                Write-Host "Error getting device info: $_"
+            }
+        }
+
+        ConvertTo-Json -InputObject $devices -Depth 10
       `;
 
       this.log('Executing BLE scan');
@@ -102,17 +117,27 @@ public class BLEScanner {
       this.log('Scan raw output', scanResult);
 
       try {
-        const discoveredDevices = JSON.parse(scanResult || '[]');
-        discoveredDevices.forEach(device => {
-          if (device.IsCosmoDevice) {
-            this.devices.set(device.Id, {
-              id: device.Id,
-              name: device.Name,
-              address: device.Address,
-              rssi: device.Rssi,
-              isConnectable: device.IsConnectable,
-              isConnected: false,
-              isCosmoDevice: true
+        const devices = JSON.parse(scanResult || '[]');
+        (Array.isArray(devices) ? devices : [devices]).forEach(device => {
+          const isCosmoDevice = 
+            (device.Name && device.Name.toLowerCase().includes('cosmo')) ||
+            (device.Description && device.Description.toLowerCase().includes('cosmo')) ||
+            (device.Properties && device.Properties['System.Devices.Aep.DeviceAddress'] && 
+             device.Properties['System.Devices.Aep.DeviceAddress'].toLowerCase().includes('cosmo'));
+
+          if (isCosmoDevice) {
+            const deviceId = device.Id;
+            this.devices.set(deviceId, {
+              id: deviceId,
+              name: device.Name || 'Unknown Cosmo Device',
+              description: device.Description,
+              status: device.Status,
+              class: device.Class,
+              isPaired: !!device.IsPaired,
+              isConnectable: device.Properties?.['System.Devices.Aep.Bluetooth.Le.IsConnectable'] || false,
+              signalStrength: device.Properties?.['System.Devices.Aep.SignalStrength'],
+              address: device.Properties?.['System.Devices.Aep.DeviceAddress'],
+              hardwareIds: device.HardwareIds
             });
           }
         });
