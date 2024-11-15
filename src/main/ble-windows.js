@@ -286,7 +286,12 @@ class BLEManager extends EventEmitter {
           id: peripheral.uuid,
           name: deviceInfo.name
         });
-        this.emit('deviceUpdate', deviceInfo);
+        this.devices.delete(peripheral.uuid);
+        this.emit('deviceUpdate', {
+          id: peripheral.uuid,
+          name: deviceInfo.name,
+          connected: false
+        });
       }
     });
   }
@@ -357,33 +362,51 @@ class BLEManager extends EventEmitter {
   }
 
   startScanning() {
-    if (this._scanning) {
-      return;
-    }
-
-    this._scanning = true;
-    noble.startScanning([], true, (error) => {
-      this.log('Scanning started', error);
-    });
-
-    // Periodically check device connections
-    this._connectionCheckInterval = setInterval(() => {
-      for (const [uuid, device] of this.devices.entries()) {
-        if (device.peripheral && !device.peripheral.state !== 'connected') {
-          this.log('Device connection lost', uuid);
-          this.handleDeviceDisconnection(uuid, device);
-        }
+    return new Promise((resolve, reject) => {
+      if (this._scanning) {
+        resolve();
+        return;
       }
-    }, 5000);
+
+      this._scanning = true;
+      noble.startScanning([], true, (error) => {
+        if (error) {
+          this._scanning = false;
+          this.log('Error starting scan', error);
+          reject(error);
+        } else {
+          this.log('Scanning started', null);
+          resolve();
+        }
+      });
+
+      // Periodically check device connections
+      this._connectionCheckInterval = setInterval(() => {
+        for (const [uuid, device] of this.devices.entries()) {
+          if (device.peripheral && device.peripheral.state !== 'connected') {
+            this.log('Device connection lost', uuid);
+            this.handleDeviceDisconnection(uuid, device);
+          }
+        }
+      }, 5000);
+    });
   }
 
   stopScanning() {
-    this._scanning = false;
-    if (this._connectionCheckInterval) {
-      clearInterval(this._connectionCheckInterval);
-    }
-    noble.stopScanning((error) => {
-      this.log('Stopped scanning', error);
+    return new Promise((resolve, reject) => {
+      this._scanning = false;
+      if (this._connectionCheckInterval) {
+        clearInterval(this._connectionCheckInterval);
+      }
+      noble.stopScanning((error) => {
+        if (error) {
+          this.log('Error stopping scan', error);
+          reject(error);
+        } else {
+          this.log('Stopped scanning', null);
+          resolve();
+        }
+      });
     });
   }
 

@@ -56,9 +56,7 @@ function createWindow() {
 
   // Start BLE scanning when window is ready
   mainWindow.webContents.on('did-finish-load', () => {
-    BLEManager.startScanning().catch(error => {
-      console.error('Failed to start scanning:', error);
-    });
+    ipcMain.emit('startScanning');
   });
 }
 
@@ -124,6 +122,30 @@ ipcMain.on('requestDevices', (event) => {
     connected: device.connected
   }));
   event.reply('deviceList', devices);
+});
+
+ipcMain.on('startScanning', async (event) => {
+  try {
+    await BLEManager.startScanning();
+    event.reply('scanningStarted');
+  } catch (error) {
+    event.reply('error', {
+      message: 'Failed to start scanning',
+      error: error.toString()
+    });
+  }
+});
+
+ipcMain.on('stopScanning', async (event) => {
+  try {
+    await BLEManager.stopScanning();
+    event.reply('scanningStopped');
+  } catch (error) {
+    event.reply('error', {
+      message: 'Failed to stop scanning',
+      error: error.toString()
+    });
+  }
 });
 
 // App lifecycle
