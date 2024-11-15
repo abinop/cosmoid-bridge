@@ -85,6 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
       g: Math.floor(Math.random() * 3),
       b: Math.floor(Math.random() * 3)
     };
+    // send color
     ipcRenderer.send('setColor', { deviceId, color });
   };
 });

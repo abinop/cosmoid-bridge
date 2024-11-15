@@ -5,12 +5,12 @@ on:
     branches: 
       - main
       - master
-      - feature/ab/2411/winver
+      - winver2
   pull_request:
     branches: 
       - main
       - master
-      - feature/ab/2411/winver
+      - winver2
 
 jobs:
   build_windows:
