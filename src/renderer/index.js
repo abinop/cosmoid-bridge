@@ -75,15 +75,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Make functions available to onclick handlers
   window.setRandomLuminosity = (deviceId) => {
-    const intensity = Math.floor(Math.random() * 255);
+    const intensity = Math.floor(Math.random() * 64);
     ipcRenderer.send('setLuminosity', { deviceId, intensity });
   };
 
   window.setRandomColor = (deviceId) => {
     const color = {
-      r: Math.floor(Math.random() * 255),
-      g: Math.floor(Math.random() * 255),
-      b: Math.floor(Math.random() * 255)
+      r: Math.floor(Math.random() * 3),
+      g: Math.floor(Math.random() * 3),
+      b: Math.floor(Math.random() * 3)
     };
     ipcRenderer.send('setColor', { deviceId, color });
   };

@@ -3,9 +3,11 @@ const fs = require('fs');
 const path = require('path');
 const noble = require('@abandonware/noble');
 const { ipcMain } = require('electron');
+const EventEmitter = require('events');
 
-class BLEManager {
+class BLEManager extends EventEmitter {
   constructor() {
+    super();
     this.devices = new Map();
     this.isScanning = false;
     
@@ -110,6 +112,7 @@ class BLEManager {
                 batteryChar.on('data', (data) => {
                   deviceInfo.batteryLevel = data[0];
                   this.updateDeviceInfo(peripheral.uuid, { batteryLevel: data[0] });
+                  this.emit('deviceUpdate', this.devices.get(peripheral.uuid));
                 });
               }
             } catch (error) {
@@ -124,8 +127,9 @@ class BLEManager {
             service: cosmoService
           });
 
-          // Emit to renderer
-          this.emitDeviceUpdate(deviceInfo);
+          // Emit device connected event
+          this.emit('deviceConnected', deviceInfo);
+          this.emit('deviceUpdate', deviceInfo);
 
           // Set up Cosmo service characteristics
           const characteristics = await cosmoService.discoverCharacteristicsAsync();
@@ -137,11 +141,23 @@ class BLEManager {
                 await char.subscribeAsync();
                 char.on('data', (data) => {
                   if (char.uuid === this.SENSOR_CHARACTERISTIC_UUID) {
-                    this.updateDeviceInfo(peripheral.uuid, { sensorValue: data[0] });
+                    const sensorValue = data[0];
+                    this.updateDeviceInfo(peripheral.uuid, { sensorValue });
+                    this.emit('sensorUpdate', {
+                      deviceId: peripheral.uuid,
+                      value: sensorValue
+                    });
                   } else if (char.uuid === this.BUTTON_STATUS_CHARACTERISTIC_UUID) {
+                    const buttonState = data[0];
+                    const pressValue = data[1];
                     this.updateDeviceInfo(peripheral.uuid, { 
-                      buttonState: data[0],
-                      pressValue: data[1]
+                      buttonState,
+                      pressValue
+                    });
+                    this.emit('buttonUpdate', {
+                      deviceId: peripheral.uuid,
+                      buttonState,
+                      pressValue
                     });
                   }
                 });
@@ -169,7 +185,11 @@ class BLEManager {
       if (this.devices.has(peripheral.uuid)) {
         const deviceInfo = this.devices.get(peripheral.uuid);
         deviceInfo.connected = false;
-        this.emitDeviceUpdate(deviceInfo);
+        this.emit('deviceDisconnected', {
+          id: peripheral.uuid,
+          name: deviceInfo.name
+        });
+        this.emit('deviceUpdate', deviceInfo);
       }
     });
   }
@@ -178,7 +198,7 @@ class BLEManager {
     const device = this.devices.get(deviceId);
     if (device) {
       Object.assign(device, updates);
-      this.emitDeviceUpdate(device);
+      this.emit('deviceUpdate', device);
     }
   }
 
@@ -291,7 +311,6 @@ class BLEManager {
 
       const command = Buffer.from([2, r, g, b, mode]); // 2 is SET_COLOR command
       await commandChar.writeAsync(command, true);
-      this.log('Color set', { r, g, b, mode });
     } catch (error) {
       this.log('Error setting color', {
         error: error.toString(),
@@ -315,7 +334,6 @@ class BLEManager {
 
       const command = Buffer.from([1, intensity, delay]); // 1 is SET_LUMINOSITY command
       await commandChar.writeAsync(command, true);
-      this.log('Brightness set', { intensity, delay });
     } catch (error) {
       this.log('Error setting brightness', {
         error: error.toString(),
